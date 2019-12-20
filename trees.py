@@ -1,25 +1,50 @@
 import numpy as np
 from numba import njit
 from collections import namedtuple
+from data import subset_data, reindex_data
+from dataclasses import dataclass
+from typing import Union
 
 # TODO:
 #
 # 1. Add support for weighting
 # 2. Create Criterion for treatment effects
 
-@njit
-def mse(X, y):
-    # add weights as idx in X and use in Criterion???
-    m = np.mean(y)
-    a = (m - y)
-    mse = a.dot(a) / a.shape[0]
-    return m, mse
+Split = namedtuple('Split', ['dim', 'idx', 'thresh', 'gain'])
 
-@njit
-def mae(X, y):
-    med = np.median(y)
-    mae = np.mean(np.abs(med - y))
-    return med, mae
+Leaf = namedtuple('Leaf', ['prediction', 'score', 'N'])
+
+class Leaf():
+    def __init__(self, prediction, score, N):
+        self.prediction = prediction
+        self.score = score
+        self.N = N
+
+    def __str__(self, level=1):
+        return "   " * (level-1) + "|--" + \
+            f'pred: {self.prediction:.4f}, score: {self.score:.4f}, N: {self.N} \n'
+
+
+class Node():
+    def __init__(self, dim, thresh, gain, left, right):
+        self.dim = dim
+        self.thresh = thresh
+        self.gain = gain
+        self.left = left
+        self.right = right
+
+    def __str__(self, level=1):
+        d,t,g = self.dim, self.thresh, self.gain,
+
+        ret = "   " * (level-1) + "|--" + \
+              'dim: {0}, thresh: {1:.4f}, gain: {2:.4f} \n'.format(d, t, g)
+        for child in [self.left, self.right]:
+            ret += child.__str__(level+1)
+        return ret
+
+    def __repr__(self):
+        return str(self)
+
 
 @njit
 def np_unique(a):
@@ -40,22 +65,23 @@ def get_indices(X, p, mn, mx):
 
 
 @njit()
-def find_threshold(crit, X, y, p, mn, mx):
-    N = X.shape[0]
+def find_threshold(crit, dat, p, mn, mx):
+    X = dat.X
+    N, _ = X.shape
 
     # bucket for large x? No need to enumerate everything!
-    _, base = crit(X,y)
+    _, base = crit(dat)
     idxs = get_indices(X, p, mn, mx)
-    loss, idx, thresh = np.inf, idxs[0], X[idxs[0], p]
+    loss, idx, thresh = np.inf, mn, X[mn, p]
 
     for i in idxs:
-        _, left = crit(X[:i,:], y[:i])
-        _, right = crit(X[i:,:], y[i:])
+        _, left = crit(subset_data(dat, None, i))
+        _, right = crit(subset_data(dat, i, None))
 
         # should this always be the mean?
-        left_share = X[:i].shape[0] / N
-        right_share = 1 - left_share
-        curr_loss = left*left_share + right*right_share
+        # left_share = X[:i].shape[0] / N
+        # right_share = 1 - left_share
+        curr_loss = left + right
 
         if curr_loss < loss:
             loss, idx = curr_loss, i
@@ -64,21 +90,16 @@ def find_threshold(crit, X, y, p, mn, mx):
     return idx, base - loss, thresh
 
 @njit
-def sort_for_dim(X, y, p):
-    idxs = np.argsort(X[:,p])
-    return X[idxs, :], y[idxs]
-
-Split = namedtuple('Split', ['dim', 'idx', 'thresh', 'gain'])
-Node = namedtuple('Node', ['dim', 'thresh', 'gain', 'left', 'right'])
-Leaf = namedtuple('Leaf', ['prediction', 'score', 'N'])
-
+def sort_for_dim(dat, p):
+    idx = np.argsort(dat.X[:,p])
+    return reindex_data(dat, idx)
 
 @njit(parallel=True)
-def find_next_split(crit, X, y, dims, min_samples):
+def find_next_split(crit, dat, min_samples):
     # pick dim with greatest gain (from dims)
     # return dim/threshold/gain
 
-    N,P = X.shape
+    N,P = dat.X.shape
     indices = np.zeros(P, dtype=np.int64)
     gains, thresholds = np.zeros(P), np.zeros(P)
 
@@ -87,41 +108,43 @@ def find_next_split(crit, X, y, dims, min_samples):
     if mn > mx:
         return None
 
-    for p in dims:
-        xi,yi = sort_for_dim(X, y, p)
-        i,g,t = find_threshold(crit, xi, yi, p, mn, mx)
-        indices[p], gains[p], thresholds[p] = i,g,t
+    for p in np.arange(P):
+        di = sort_for_dim(dat, p)
+        indices[p], gains[p], thresholds[p] = \
+            find_threshold(crit, di, p, mn, mx)
 
     dim = np.argmax(gains)
     return Split(dim, indices[dim], thresholds[dim], gains[dim])
 
+
 @njit
-def split_data(X, y, split):
-    """ returns X_left, y_left, X_right, y_right """
+def split_data(dat, split):
     dim, idx = split.dim, split.idx
-    Xo, yo = sort_for_dim(X, y, dim)
-    return Xo[:idx, :], yo[:idx], Xo[idx:, :], yo[idx:]
+    do = sort_for_dim(dat, dim)
+    left = subset_data(do, None, idx)
+    right = subset_data(do, idx, None)
+    return left, right
 
 
-def build_tree(crit, X, y, dims, k, min_gain, min_samples):
+def build_tree(crit, dat, k, min_gain, min_samples):
     if k == 0:
-        return Leaf(*crit(X, y), y.shape[0])
+        return Leaf(*crit(dat), N = dat.y.shape[0])
 
-    split = find_next_split(crit, X, y, dims, min_samples)
+    split = find_next_split(crit, dat, min_samples)
 
     if split is None:
-        return Leaf(*crit(X, y), y.shape[0])
+        return Leaf(*crit(dat), N = dat.y.shape[0])
 
-    Xl, yl, Xr, yr = split_data(X, y, split)
+    dat_l, dat_r = split_data(dat, split)
     dim, thresh, gain = split.dim, split.thresh, split.gain
 
     # stop if one side is empty
-    if yl.shape[0] == 0 or yr.shape[0] == 0 or gain < min_gain:
-        return Leaf(*crit(X, y), y.shape[0])
+    if dat_l.y.shape[0] == 0 or dat_r.y.shape[0] == 0 or gain < min_gain:
+        return Leaf(*crit(dat), N = dat.y.shape[0])
 
     return Node(dim, thresh, gain,
-                left = build_tree(crit, Xl, yl, dims, k-1, min_gain, min_samples),
-                right = build_tree(crit, Xr, yr, dims, k-1, min_gain, min_samples))
+                left = build_tree(crit, dat_l, k-1, min_gain, min_samples),
+                right = build_tree(crit, dat_r, k-1, min_gain, min_samples))
 
 
 def pick_split(x, node):
@@ -135,3 +158,24 @@ def predict(x, node):
             node = pick_split(x, node)
         except AttributeError:
             return node.prediction
+
+from sklearn.base import BaseEstimator, RegressorMixin
+
+class TransferTreeRegressor(RegressorMixin, BaseEstimator):
+    def __init__(self, criterion, max_depth, min_gain = 0.0, min_samples_leaf = 10):
+        self.criterion = criterion
+        self.max_depth = max_depth
+        self.min_gain = min_gain
+        self.min_samples_leaf = min_samples_leaf
+
+    def fit(self, X, y, **kwargs):
+        data_, crit = self.criterion(X, y, **kwargs)
+
+        self.tree = build_tree(crit,
+                               data_,
+                               self.max_depth,
+                               self.min_gain,
+                               self.min_samples_leaf)
+
+    def predict(self, X):
+        return np.array([predict(x, self.tree) for x in X])

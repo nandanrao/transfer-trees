@@ -1,10 +1,14 @@
 import numpy as np
 import trees as t
+from data import Data
+from criteria import mse, mae
 
-def test_mse():
-    assert t.mse(None, np.array([10.,10.,10.,10.,30.,30.,30.,30.]))[1] == 100.
-    assert t.mse(None, np.array([10.,10.,10.,10.]))[1] == 0.
-    assert t.mse(None, np.array([5.,5.,5.,5.,10.,10.,10.,10.]))[1] == 6.25
+def dataset(W, X, y):
+    if W is None:
+        W = np.ones((X.shape[0], 1))
+
+    return Data(W, X, y)
+
 
 def test_get_indices():
     ar = np.array([0,0,0,1,2,3,3,3,5]).reshape(-1, 1)
@@ -27,7 +31,8 @@ def test_find_threshold_mse():
 
     X = np.array([1,2,3,4,5,6,7,8]).reshape(-1, 1)
     y = np.array([5,5,5,5,10,10,10,10], dtype=np.float64)
-    idx,score,thresh = t.find_threshold(t.mse, X, y, 0, 1, X.shape[0] - 1)
+    dat, crit = mse(X, y)
+    idx,score,thresh = t.find_threshold(crit, dat, 0, 1, X.shape[0] - 1)
     assert idx == 4
     assert score == 2.5**2
     assert thresh == 4.5
@@ -39,9 +44,10 @@ def test_find_threshold_mae():
 
     X = np.array([1,2,3,4,5,6]).reshape(-1, 1)
     y = np.array([5,10,15,25,30,35], dtype=np.float64)
-    idx,score,thresh = t.find_threshold(t.mae, X, y, 0, 1, X.shape[0] - 1)
+    dat, crit = mae(X, y)
+    idx,score,thresh = t.find_threshold(crit, dat, 0, 1, X.shape[0] - 1)
     assert idx == 3
-    assert score == 10 - np.mean([5., 0., 5.])
+    assert np.isclose(score, (10 - np.mean([5., 0., 5.])))
     assert thresh == 3.5
 
 def test_sort_for_dim():
@@ -55,22 +61,23 @@ def test_sort_for_dim():
                   [8,3]])
     y = np.array([10,20,30,40,50,60,70,80], dtype=np.float64)
 
+    dat = dataset(None, X, y)
     # sorts by given x and returns 2-d array
-    xo,yo = t.sort_for_dim(X, y, 0)
-    assert np.all(xo == X)
-    assert np.all(yo == y)
+    do = t.sort_for_dim(dat, 0)
+    assert np.all(do.X == X)
+    assert np.all(do.y == y)
 
-    xo,yo = t.sort_for_dim(X, y, 1)
+    do = t.sort_for_dim(dat, 1)
 
-    assert np.all(xo == np.array([[8,3],
-                                  [7,4],
-                                  [6,5],
-                                  [5,6],
-                                  [4,7],
-                                  [3,8],
-                                  [2,9],
-                                  [1,10]]))
-    assert np.all(yo == np.flip(y))
+    assert np.all(do.X == np.array([[8,3],
+                                    [7,4],
+                                    [6,5],
+                                    [5,6],
+                                    [4,7],
+                                    [3,8],
+                                    [2,9],
+                                    [1,10]]))
+    assert np.all(do.y == np.flip(y))
 
 
 def test_find_next_split_1():
@@ -83,7 +90,8 @@ def test_find_next_split_1():
                   [7,4],
                   [8,3]])
     y = np.array([10,20,30,40,50,60,70,80], dtype=np.float64)
-    nxt = t.find_next_split(t.mse, X, y, np.array([0,1]), 2)
+    dat, crit = mse(X, y)
+    nxt = t.find_next_split(crit, dat, 2)
     assert nxt == t.Split(0, 4, 4.5, 400.)
 
 def test_find_next_split_2():
@@ -96,7 +104,8 @@ def test_find_next_split_2():
                   [7,4],
                   [8,3]])
     y = np.array([10,20,30,40,50,60,70,80], dtype=np.float64)
-    nxt = t.find_next_split(t.mse, X, y, np.array([0,1]), 2)
+    dat, crit = mse(X, y)
+    nxt = t.find_next_split(crit, dat, 2)
     assert nxt == t.Split(1, 4, 6.5, 400.)
 
 def test_split_data():
@@ -109,21 +118,22 @@ def test_split_data():
                   [7,4],
                   [8,3]])
     y = np.array([10,20,30,40,50,60,70,80], dtype=np.float64)
+    dat = dataset(None, X, y)
     split = t.Split(1,3,6,100.)
-    Xl, yl, Xr, yr = t.split_data(X, y, split)
-    assert np.all(Xl == np.array([[8,3],
+    dl, dr = t.split_data(dat, split)
+    assert np.all(dl.X == np.array([[8,3],
                                   [7,4],
                                   [60,5]]))
 
-    assert np.all(yl == np.array([80,70,60]))
+    assert np.all(dl.y == np.array([80,70,60]))
 
-    assert np.all(Xr == np.array([[5,6],
+    assert np.all(dr.X == np.array([[5,6],
                                   [4,7],
                                   [30,8],
                                   [20,9],
                                   [1,10]]))
 
-    assert np.all(yr == np.array([50,40,30,20,10]))
+    assert np.all(dr.y == np.array([50,40,30,20,10]))
 
 
 def test_build_tree_obeys_min_samples():
@@ -136,9 +146,9 @@ def test_build_tree_obeys_min_samples():
                   [7,4],
                   [8,3]])
     y = np.array([10,20,30,40,50,60,70,80], dtype=np.float64)
-
-    tree = t.build_tree(t.mse, X, y,
-                        dims = np.array([0,1]),
+    dat, crit = mse(X, y)
+    tree = t.build_tree(crit,
+                        dat,
                         k = 30,
                         min_gain = 0.1,
                         min_samples = 2)
@@ -149,8 +159,8 @@ def test_build_tree_obeys_min_samples():
     assert type(tree.left.left) == t.Leaf
     assert type(tree.right.right) == t.Leaf
 
-    tree = t.build_tree(t.mse, X, y,
-                        dims = np.array([0,1]),
+    tree = t.build_tree(crit,
+                        dat,
                         k = 30,
                         min_gain = 0.1,
                         min_samples = 3)
@@ -159,8 +169,8 @@ def test_build_tree_obeys_min_samples():
     assert type(tree.left) == t.Leaf
     assert type(tree.right) == t.Leaf
 
-    tree = t.build_tree(t.mse, X, y,
-                        dims = np.array([0,1]),
+    tree = t.build_tree(crit,
+                        dat,
                         k = 30,
                         min_gain = 0.1,
                         min_samples = 1)
@@ -189,7 +199,7 @@ def test_build_tree_obeys_min_samples():
 #                   [10,3]])
 #     y = np.array([10,20,30,40,50,60,70,80])
 
-#     tree = t.build_tree(t.mse, X, y,
+#     tree = t.build_tree(mse, X, y,
 #                         dims = np.array([0,1]),
 #                         k = 30,
 #                         min_gain = 0.1,
