@@ -71,10 +71,7 @@ def _calc_treatment_stats(w, treatment, y):
     t_var = (t_vals**2).dot(nt_weight)  - (t_mean)**2
     c_var = (c_vals**2).dot(nc_weight)  - (c_mean)**2
 
-    # Move to causal?
-    var = c_var/c_vals.shape[0] + t_var/t_vals.shape[0]
-
-    return est_treatment_effect, var
+    return est_treatment_effect, t_var, c_var
 
 @njit
 def _transfer(dat):
@@ -94,8 +91,10 @@ def _transfer(dat):
     tau_var = np.var(np.array([tau for tau,_ in treatments])) + \
         np.var(np.array([var for _,var in treatments]))
 
-    tau, var = _calc_treatment_stats(weights, treatment, dat.y)
 
+    tau, t_var, c_var  = _calc_treatment_stats(w, treatment, dat.y)
+
+    var = t_var + c_var
     score = (tau_var + 2*var - tau**2) * weights.sum()
 
     return tau, score
@@ -113,27 +112,27 @@ def transfer(X, y, treatment, context_idxs, target_X):
 @njit
 def _causal(dat):
     w, treatment = dat.W[:, 0].copy(), dat.W[:, 1]
+    min_samples = dat.z[0]
+    var_weight = dat.z[1]
 
     # Controls samples, minimum control and treatment
     # by setting score to infinity if does not satisfy requirements
-    # Note: this obviously makes gradient optimization impossible for now
-    min_samples = dat.z[0]
+    # Note: this obviously would make gradient optimization a mess
     samples_t = treatment.sum()
     samples_c = treatment.shape[0] - samples_t
-
     if samples_c < min_samples or samples_t < min_samples:
         return np.inf, np.inf, np.inf
 
-    tau, var = _calc_treatment_stats(w, treatment, dat.y)
+    tau, t_var, c_var = _calc_treatment_stats(w, treatment, dat.y)
 
-    # variance times 2 - once to adjust for mean,
-    # another for variance
-    # weight by weights of leaf
-    var_weight = dat.z[1]
-    score = (var_weight*2*var + ((1-var_weight) * -(tau**2))) * w.sum()
-    sd = np.sqrt(var)
+    # score
+    est_var = c_var/samples_c + t_var/samples_t
+    score = var_weight * 2 * est_var  # penalize 2* estimator variance
+    score -= (1-var_weight) * tau**2 # reward squared treatment effect
+    score *= 2 # double to make up for var_weight
+    score *= w.sum() # weight by weights of leaf
 
-    return tau, score, sd
+    return tau, score, np.sqrt(est_var)
 
 
 def causal_tree_criterion(X, y, treatment,
