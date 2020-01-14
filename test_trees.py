@@ -1,13 +1,7 @@
 import numpy as np
 import trees as t
-from data import Data
-from criteria import mse, mae
-
-def dataset(W, X, y):
-    if W is None:
-        W = np.ones((X.shape[0], 1))
-
-    return Data(W, X, y)
+from data import Data, dataset
+from criteria import mse, mae, causal_tree_criterion
 
 
 def test_get_indices():
@@ -119,11 +113,38 @@ def test_split_data():
                   [8,3]])
     y = np.array([10,20,30,40,50,60,70,80], dtype=np.float64)
     dat = dataset(None, X, y)
-    split = t.Split(1,3,6,100.)
-    dl, dr = t.split_data(dat, split)
+    split = t.Split(1,3,5.5,100.)
+    dl, dr = t.split_data_by_idx(dat, split.dim, split.idx)
     assert np.all(dl.X == np.array([[8,3],
-                                  [7,4],
-                                  [60,5]]))
+                                    [7,4],
+                                    [60,5]]))
+
+    assert np.all(dl.y == np.array([80,70,60]))
+
+    assert np.all(dr.X == np.array([[5,6],
+                                  [4,7],
+                                  [30,8],
+                                  [20,9],
+                                  [1,10]]))
+
+    assert np.all(dr.y == np.array([50,40,30,20,10]))
+
+
+def test_split_data_by_thresh():
+    X = np.array([[1,10],
+                  [20,9],
+                  [30,8],
+                  [4,7],
+                  [5,6],
+                  [60,5],
+                  [7,4],
+                  [8,3]])
+    y = np.array([10,20,30,40,50,60,70,80], dtype=np.float64)
+    dat = dataset(None, X, y)
+    dl, dr = t.split_data_by_thresh(dat, 1, 5.5)
+    assert np.all(dl.X == np.array([[8,3],
+                                    [7,4],
+                                    [60,5]]))
 
     assert np.all(dl.y == np.array([80,70,60]))
 
@@ -150,8 +171,8 @@ def test_build_tree_obeys_min_samples():
     tree = t.build_tree(crit,
                         dat,
                         k = 30,
-                        min_gain = 0.1,
-                        min_samples = 2)
+                        min_samples = 2,
+                        alpha = 0.5)
 
     assert tree.thresh == 6.5
     assert tree.left.thresh == 4.5
@@ -162,8 +183,8 @@ def test_build_tree_obeys_min_samples():
     tree = t.build_tree(crit,
                         dat,
                         k = 30,
-                        min_gain = 0.1,
-                        min_samples = 3)
+                        min_samples = 3,
+                        alpha = 0.5)
 
     assert tree.thresh == 6.5
     assert type(tree.left) == t.Leaf
@@ -172,8 +193,8 @@ def test_build_tree_obeys_min_samples():
     tree = t.build_tree(crit,
                         dat,
                         k = 30,
-                        min_gain = 0.1,
-                        min_samples = 1)
+                        min_samples = 1,
+                        alpha = 0.5)
 
     assert tree.thresh == 6.5
     assert tree.left.thresh == 4.5
@@ -186,6 +207,64 @@ def test_build_tree_obeys_min_samples():
     assert tree.right.thresh == 8.5
     assert tree.right.right.dim == 0
     assert tree.right.right.thresh == 10.5
+
+def test_build_tree_obeys_alpha():
+    X = np.array([[1,10],
+                  [20,9],
+                  [30,8],
+                  [4,7],
+                  [5,6],
+                  [60,5],
+                  [7,4],
+                  [8,3]])
+    y = np.array([10,20,30,40,50,60,70,80], dtype=np.float64)
+    dat, crit = mse(X, y)
+    tree = t.build_tree(crit,
+                        dat,
+                        k = 30,
+                        min_samples = 1,
+                        alpha = 0.0)
+
+
+    assert tree.leaves() == 8
+
+    tree = t.build_tree(crit,
+                        dat,
+                        k = 30,
+                        min_samples = 1,
+                        alpha = 7.0)
+
+    assert tree.leaves() == 4
+
+def test_build_tree_works_with_criterion_with_custom_min_samples():
+    X = np.array([[1,10],
+                  [20,9],
+                  [30,8],
+                  [4,7],
+                  [5,6],
+                  [60,5],
+                  [7,4],
+                  [8,3]])
+    y = np.array([15.,20.,0.,5.,20.,25.,35.,40.])
+    treatment = np.array([0,0,0,0,1,1,1,1])
+    dat, crit = causal_tree_criterion(X, y, treatment, min_samples=1)
+    tree = t.build_tree(crit,
+                        dat,
+                        k = 30,
+                        min_samples = 0,
+                        alpha = 0.0)
+
+    assert len(tree) == 3
+
+    dat, crit = causal_tree_criterion(X, y, treatment, min_samples=2)
+    tree = t.build_tree(crit,
+                        dat,
+                        k = 30,
+                        min_samples = 0,
+                        alpha = 0.0)
+
+    assert len(tree) == 1
+
 
 
 # def test_build_tree_works_with_repetitions():
@@ -202,7 +281,7 @@ def test_build_tree_obeys_min_samples():
 #     tree = t.build_tree(mse, X, y,
 #                         dims = np.array([0,1]),
 #                         k = 30,
-#                         min_gain = 0.1,
+#
 #                         min_samples = 2)
 
 #     print(tree)

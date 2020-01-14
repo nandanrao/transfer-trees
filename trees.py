@@ -12,38 +12,56 @@ from typing import Union
 
 Split = namedtuple('Split', ['dim', 'idx', 'thresh', 'gain'])
 
-Leaf = namedtuple('Leaf', ['prediction', 'score', 'N'])
-
 class Leaf():
-    def __init__(self, prediction, score, N):
+    def __init__(self, prediction, score, se, N):
         self.prediction = prediction
+        self.se = se
         self.score = score
         self.N = N
 
     def __str__(self, level=1):
         return "   " * (level-1) + "|--" + \
-            f'pred: {self.prediction:.4f}, score: {self.score:.4f}, N: {self.N} \n'
+            f'pred: {self.prediction:.4f}, score: {self.score:.4f}, se: {self.se:.4f}, N: {self.N} \n'
 
+    def __len__(self):
+        return 1
 
 class Node():
-    def __init__(self, dim, thresh, gain, left, right):
+    def __init__(self, dim, thresh, gain, tot_gain, score, prediction, left, right):
         self.dim = dim
         self.thresh = thresh
         self.gain = gain
+        self.tot_gain = tot_gain
+        self.prediction = prediction
+        self.score = score
         self.left = left
         self.right = right
 
     def __str__(self, level=1):
-        d,t,g = self.dim, self.thresh, self.gain,
+        d,t,s,g,tg = self.dim, self.thresh, self.score, self.gain, self.tot_gain
 
         ret = "   " * (level-1) + "|--" + \
-              'dim: {0}, thresh: {1:.4f}, gain: {2:.4f} \n'.format(d, t, g)
+              'dim: {0}, thresh: {1:.4f}, score: {2:.4f}, gain: {3:.4f}, tot_gain: {4:.4f} \n'.format(d, t, s, g, tg)
         for child in [self.left, self.right]:
             ret += child.__str__(level+1)
         return ret
 
     def __repr__(self):
         return str(self)
+
+    def __len__(self):
+        if self.left and self.right:
+            return 1 + max([len(c) for c in [self.left, self.right]])
+        return 1
+
+    def leaves(self):
+        leaves = 0
+        for child in [self.left, self.right]:
+            if isinstance(child, Node):
+                leaves += child.leaves()
+            else:
+                leaves += 1
+        return leaves
 
 
 @njit
@@ -70,13 +88,14 @@ def find_threshold(crit, dat, p, mn, mx):
     N, _ = X.shape
 
     # bucket for large x? No need to enumerate everything!
-    _, base = crit(dat)
+    _, base, _ = crit(dat)
     idxs = get_indices(X, p, mn, mx)
     loss, idx, thresh = np.inf, mn, X[mn, p]
 
     for i in idxs:
-        _, left = crit(subset_data(dat, None, i))
-        _, right = crit(subset_data(dat, i, None))
+        left_dat, right_dat = subset_data(dat, None, i), subset_data(dat, i, None)
+        _, left, _ = crit(left_dat)
+        _, right, _ = crit(right_dat)
 
         # should this always be the mean?
         # left_share = X[:i].shape[0] / N
@@ -114,37 +133,74 @@ def find_next_split(crit, dat, min_samples):
             find_threshold(crit, di, p, mn, mx)
 
     dim = np.argmax(gains)
+    gain = gains[dim]
+
     return Split(dim, indices[dim], thresholds[dim], gains[dim])
 
 
 @njit
-def split_data(dat, split):
-    dim, idx = split.dim, split.idx
-    do = sort_for_dim(dat, dim)
-    left = subset_data(do, None, idx)
-    right = subset_data(do, idx, None)
+def split_data_by_idx(dat, dim, idx, sorted_ = False):
+    if not sorted_:
+        dat = sort_for_dim(dat, dim)
+    left = subset_data(dat, None, idx)
+    right = subset_data(dat, idx, None)
     return left, right
 
+@njit
+def first_greater(a, thresh):
+    for i,x in enumerate(a):
+        if x > thresh:
+            return a[i], i
+    return None
 
-def build_tree(crit, dat, k, min_gain, min_samples):
+@njit
+def split_data_by_thresh(dat, dim, thresh):
+    do = sort_for_dim(dat, dim)
+    _, idx = first_greater(do.X[:, dim], thresh)
+    return split_data_by_idx(do, dim, idx, sorted_ = True)
+
+
+def build_tree(crit, dat, k, min_samples, alpha):
+    pred, score, se = crit(dat)
+
+    leaf = Leaf(pred, score, se, N = dat.y.shape[0])
+
+    # Stop if max depth is reached
     if k == 0:
-        return Leaf(*crit(dat), N = dat.y.shape[0])
+        return leaf
 
     split = find_next_split(crit, dat, min_samples)
 
-    if split is None:
-        return Leaf(*crit(dat), N = dat.y.shape[0])
+    # Stop if find_next_split fails to find a possible split
+    if split is None or split.gain <= 0:
+        return leaf
 
-    dat_l, dat_r = split_data(dat, split)
+    dat_l, dat_r = split_data_by_idx(dat, split.dim, split.idx)
     dim, thresh, gain = split.dim, split.thresh, split.gain
 
     # stop if one side is empty
-    if dat_l.y.shape[0] == 0 or dat_r.y.shape[0] == 0 or gain < min_gain:
-        return Leaf(*crit(dat), N = dat.y.shape[0])
+    if dat_l.y.shape[0] == 0 or dat_r.y.shape[0] == 0:
+        return leaf
 
-    return Node(dim, thresh, gain,
-                left = build_tree(crit, dat_l, k-1, min_gain, min_samples),
-                right = build_tree(crit, dat_r, k-1, min_gain, min_samples))
+    # Depth-first tree building
+    left = build_tree(crit, dat_l, k-1, min_samples, alpha)
+    right = build_tree(crit, dat_r, k-1, min_samples, alpha)
+
+    tot_gain = gain
+    for child in [left, right]:
+        if isinstance(child, Node):
+            tot_gain += child.tot_gain
+
+    node = Node(dim, thresh, gain, tot_gain, pred, score, left, right)
+
+    # Compute effective alpha, the penalty parameter required to
+    # make this node's split useless. If less than penalty,
+    # prune this node.
+    eff_alpha = tot_gain / (node.leaves() - 1)
+    if eff_alpha < alpha:
+        return leaf
+
+    return node
 
 
 def pick_split(x, node):
@@ -152,30 +208,48 @@ def pick_split(x, node):
         return node.right
     return node.left
 
-def predict(x, node):
+def predict(x, node, interval=False):
     while True:
         try:
             node = pick_split(x, node)
         except AttributeError:
+            if interval:
+                return (node.prediction, node.se)
             return node.prediction
+
+
+def score_tree(node, dat, crit):
+    try:
+        dat_l, dat_r = split_data_by_thresh(dat, node.dim, node.thresh)
+        left = score_tree(node.left, dat_l, crit)
+        right = score_tree(node.right, dat_r, crit)
+        return left + right
+    except AttributeError:
+        _, score, _ = crit(dat)
+        return score
+
 
 from sklearn.base import BaseEstimator, RegressorMixin
 
 class TransferTreeRegressor(RegressorMixin, BaseEstimator):
-    def __init__(self, criterion, max_depth, min_gain = 0.0, min_samples_leaf = 10):
+    def __init__(self, criterion, max_depth = 10, min_samples_leaf = 2, alpha = 0.5):
         self.criterion = criterion
         self.max_depth = max_depth
-        self.min_gain = min_gain
         self.min_samples_leaf = min_samples_leaf
+        self.alpha = alpha
 
-    def fit(self, X, y, **kwargs):
-        data_, crit = self.criterion(X, y, **kwargs)
+    def fit(self, X, y, **fit_params):
+        data_, crit = self.criterion(X, y, **fit_params)
 
         self.tree = build_tree(crit,
                                data_,
                                self.max_depth,
-                               self.min_gain,
-                               self.min_samples_leaf)
+                               self.min_samples_leaf,
+                               self.alpha)
 
-    def predict(self, X):
-        return np.array([predict(x, self.tree) for x in X])
+    def predict(self, X, interval=False):
+        return np.array([predict(x, self.tree, interval) for x in X])
+
+    def score(self, X, y, **fit_params):
+        data_, crit = self.criterion(X, y, **fit_params)
+        return score_tree(self.tree, data_, crit)

@@ -13,7 +13,9 @@ def _basic_data(X, y, sample_weight):
     W = sample_weight.reshape(-1, 1)
     W /= W.sum()
 
-    return Data(W, X, y)
+    z = np.empty(0, dtype=np.float64)
+
+    return Data(z, W, X, y)
 
 @njit
 def _mse(dat):
@@ -23,7 +25,7 @@ def _mse(dat):
 
     w = dat.W[:,0]
     mse = (a**2).dot(w)
-    return m, mse
+    return m, mse, None
 
 @njit
 def _mae(dat):
@@ -32,7 +34,7 @@ def _mae(dat):
 
     w = dat.W[:,0]
     mae = np.abs(med - y).dot(w)
-    return med, mae
+    return med, mae, None
 
 
 def mse(X, y, sample_weight = None):
@@ -58,16 +60,19 @@ def _calc_treatment_stats(w, treatment, y):
 
     # weighted mean based on weights within leaf
     t_weight, c_weight = w[treatment == 1], w[treatment == 0]
+    nt_weight, nc_weight = _normalize(t_weight), _normalize(c_weight)
 
-    t_mean, c_mean = t_vals.dot(_normalize(t_weight)), c_vals.dot(_normalize(c_weight))
+    t_mean, c_mean = t_vals.dot(nt_weight), c_vals.dot(nc_weight)
 
     # treatment effect weighted by weight of leaf
     est_treatment_effect = t_mean - c_mean
 
     # penalize the variance of the leaf
-    t_var = np.dot((t_vals - t_mean)**2, t_weight / w.sum())
-    c_var = np.dot((c_vals - c_mean)**2, c_weight / w.sum())
-    var = t_var + c_var
+    t_var = (t_vals**2).dot(nt_weight)  - (t_mean)**2
+    c_var = (c_vals**2).dot(nc_weight)  - (c_mean)**2
+
+    # Move to causal?
+    var = c_var/c_vals.shape[0] + t_var/t_vals.shape[0]
 
     return est_treatment_effect, var
 
@@ -109,17 +114,32 @@ def transfer(X, y, treatment, context_idxs, target_X):
 def _causal(dat):
     w, treatment = dat.W[:, 0].copy(), dat.W[:, 1]
 
+    # Controls samples, minimum control and treatment
+    # by setting score to infinity if does not satisfy requirements
+    # Note: this obviously makes gradient optimization impossible for now
+    min_samples = dat.z[0]
+    samples_t = treatment.sum()
+    samples_c = treatment.shape[0] - samples_t
+
+    if samples_c < min_samples or samples_t < min_samples:
+        return np.inf, np.inf, np.inf
+
     tau, var = _calc_treatment_stats(w, treatment, dat.y)
 
     # variance times 2 - once to adjust for mean,
     # another for variance
     # weight by weights of leaf
-    score = (2*var - tau**2) * w.sum()
+    var_weight = dat.z[1]
+    score = (var_weight*2*var + ((1-var_weight) * -(tau**2))) * w.sum()
+    sd = np.sqrt(var)
 
-    return tau, score
+    return tau, score, sd
 
 
-def causal_tree_criterion(X, y, treatment, sample_weight = None):
+def causal_tree_criterion(X, y, treatment,
+                          sample_weight = None,
+                          min_samples = 0,
+                          var_weight = 0.5):
     N, P = X.shape
 
     if sample_weight is None:
@@ -130,4 +150,6 @@ def causal_tree_criterion(X, y, treatment, sample_weight = None):
     W = np.hstack([sample_weight.reshape(-1, 1),
                    treatment.reshape(-1, 1)])
 
-    return Data(W, X, y), _causal
+    z = np.array([min_samples, var_weight], dtype=np.float64)
+
+    return Data(z, W, X, y), _causal

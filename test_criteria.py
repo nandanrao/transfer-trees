@@ -1,4 +1,5 @@
 import numpy as np
+import criteria as c
 from criteria import *
 
 X = lambda N: np.random.normal(size = N).reshape(-1, 1)
@@ -26,12 +27,23 @@ def test_causal():
 
     assert crit(dat)[1] == -400.
 
-def test_causal_penalizes_double_variance():
-    dat, crit = causal_tree_criterion(X(8),
-                                      np.array([15.,20.,0.,5.,20.,25.,35.,40.]),
-                                      np.array([0,0,0,0,1,1,1,1]))
+# def test_causal_penalizes_double_variance():
+#     dat, crit = causal_tree_criterion(X(8),
+#                                       np.array([15.,20.,0.,5.,20.,25.,35.,40.]) ,
+#                                       np.array([0,0,0,0,1,1,1,1]))
 
-    assert crit(dat)[1] == -400. + 2*np.var([15., 20., 0., 5.])
+#     assert crit(dat)[1] == -400. + 2*np.var([15., 20., 0., 5.])
+
+# def test_calc_treatment_stats_nails_variance():
+#     w = np.ones(4) / 4
+#     mean, var = c._calc_treatment_stats(w,
+#                                         np.array([0,0,1,1]),
+#                                         np.array([10.,20.,30.,20.]))
+
+#     print(mean)
+#     print(var)
+
+#     assert False
 
 def test_causal_with_weights_trivial():
     W = lambda N: np.array([0.5, 0.25] * int((N/2)))
@@ -60,3 +72,12 @@ def test_causal_with_weights_outlier():
                                       np.array([1.,1.,1.,1.,1.,1.,1.,0.00001]))
 
     assert np.isclose(crit(dat)[1], -400., 1.0)
+
+
+def test_causal_with_min_samples_inf_score():
+    dat, crit = causal_tree_criterion(X(8),
+                                      np.array([10.,10.,10.,10.,30.,30.,30.,30.]),
+                                      np.array([0,0,0,0,1,1,1,1]),
+                                      min_samples = 5)
+
+    assert crit(dat)[1] == np.inf
