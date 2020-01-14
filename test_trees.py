@@ -31,6 +31,14 @@ def test_find_threshold_mse():
     assert score == 2.5**2
     assert thresh == 4.5
 
+
+def test_get_indices_gets_non_repeated_values():
+    X = np.array([1,1,1,1,2,3,4,5,5,5,6,7,7,7,7,8,8,8,8]).reshape(-1, 1)
+    assert np.all(X[t.get_indices(X, 0, 2, X.shape[0] - 3), 0] == np.array([2,3,4,5,6,7,8]))
+    X = np.array([1,1,1,1,2,3,4,5,5,5,6,7,7,7,7,8]).reshape(-1, 1)
+    assert np.all(X[t.get_indices(X, 0, 2, X.shape[0] - 3), 0] == np.array([2,3,4,5,6,7]))
+
+
 def test_find_threshold_mae():
     # x,y
     # x is one dimension
@@ -104,30 +112,22 @@ def test_find_next_split_2():
 
 def test_split_data():
     X = np.array([[1,10],
-                  [20,9],
-                  [30,8],
-                  [4,7],
-                  [5,6],
-                  [60,5],
-                  [7,4],
-                  [8,3]])
-    y = np.array([10,20,30,40,50,60,70,80], dtype=np.float64)
+                  [2,20],
+                  [3,30],
+                  [4,40]])
+    y = np.array([10,20,30,40], dtype=np.float64)
     dat = dataset(None, X, y)
-    split = t.Split(1,3,5.5,100.)
-    dl, dr = t.split_data_by_idx(dat, split.dim, split.idx)
-    assert np.all(dl.X == np.array([[8,3],
-                                    [7,4],
-                                    [60,5]]))
+    dl, dr = t.split_data_by_idx(dat, 2)
 
-    assert np.all(dl.y == np.array([80,70,60]))
+    assert np.all(dl.X == np.array([[1,10],
+                                    [2,20]]))
 
-    assert np.all(dr.X == np.array([[5,6],
-                                  [4,7],
-                                  [30,8],
-                                  [20,9],
-                                  [1,10]]))
+    assert np.all(dl.y == np.array([10, 20]))
 
-    assert np.all(dr.y == np.array([50,40,30,20,10]))
+    assert np.all(dr.X == np.array([[3,30],
+                                    [4,40]]))
+
+    assert np.all(dr.y == np.array([30, 40]))
 
 
 def test_split_data_by_thresh():
@@ -139,6 +139,7 @@ def test_split_data_by_thresh():
                   [60,5],
                   [7,4],
                   [8,3]])
+
     y = np.array([10,20,30,40,50,60,70,80], dtype=np.float64)
     dat = dataset(None, X, y)
     dl, dr = t.split_data_by_thresh(dat, 1, 5.5)
@@ -235,6 +236,28 @@ def test_build_tree_obeys_alpha():
                         alpha = 7.0)
 
     assert tree.leaves() == 4
+
+def test_estimate_trees_replaces_predictions():
+    X = np.array([[1,10],
+                  [20,9],
+                  [30,8],
+                  [4,7],
+                  [5,6],
+                  [60,5],
+                  [7,4],
+                  [8,3]])
+    y = np.array([15.,20.,0.,5.,20.,25.,35.,40.])
+    treatment = np.array([0,0,0,0,1,1,1,1])
+    dat, crit = causal_tree_criterion(X, y, treatment, min_samples=1)
+    tree = t.build_tree(crit, dat, k = 30, min_samples = 1, alpha = 0.0)
+
+    y[4:] += 10
+    dat, crit = causal_tree_criterion(X, y, treatment, min_samples=1)
+    new_tree = t.estimate_tree(tree, dat, crit)
+
+    assert new_tree.right.prediction > tree.right.prediction
+    assert new_tree.left.left.prediction > tree.left.left.prediction
+
 
 def test_build_tree_works_with_criterion_with_custom_min_samples():
     X = np.array([[1,10],

@@ -13,15 +13,15 @@ from typing import Union
 Split = namedtuple('Split', ['dim', 'idx', 'thresh', 'gain'])
 
 class Leaf():
-    def __init__(self, prediction, score, se, N):
+    def __init__(self, prediction, score, interval, N):
         self.prediction = prediction
-        self.se = se
+        self.interval = interval
         self.score = score
         self.N = N
 
     def __str__(self, level=1):
         return "   " * (level-1) + "|--" + \
-            f'pred: {self.prediction:.4f}, score: {self.score:.4f}, se: {self.se:.4f}, N: {self.N} \n'
+            f'pred: {self.prediction:.4f}, score: {self.score:.4f}, N: {self.N} \n'
 
     def __len__(self):
         return 1
@@ -78,7 +78,7 @@ def np_unique(a):
 
 @njit
 def get_indices(X, p, mn, mx):
-    _, idxs = np_unique(X[:, p])
+    vals, idxs = np_unique(X[:, p])
     return idxs[(idxs >= mn) & (idxs <= mx)]
 
 
@@ -88,18 +88,15 @@ def find_threshold(crit, dat, p, mn, mx):
     N, _ = X.shape
 
     # bucket for large x? No need to enumerate everything!
-    _, base, _ = crit(dat)
+    _, base, __ = crit(dat)
     idxs = get_indices(X, p, mn, mx)
     loss, idx, thresh = np.inf, mn, X[mn, p]
 
     for i in idxs:
         left_dat, right_dat = subset_data(dat, None, i), subset_data(dat, i, None)
-        _, left, _ = crit(left_dat)
-        _, right, _ = crit(right_dat)
+        _, left, __ = crit(left_dat)
+        _, right, __ = crit(right_dat)
 
-        # should this always be the mean?
-        # left_share = X[:i].shape[0] / N
-        # right_share = 1 - left_share
         curr_loss = left + right
 
         if curr_loss < loss:
@@ -139,9 +136,7 @@ def find_next_split(crit, dat, min_samples):
 
 
 @njit
-def split_data_by_idx(dat, dim, idx, sorted_ = False):
-    if not sorted_:
-        dat = sort_for_dim(dat, dim)
+def split_data_by_idx(dat, idx):
     left = subset_data(dat, None, idx)
     right = subset_data(dat, idx, None)
     return left, right
@@ -157,13 +152,13 @@ def first_greater(a, thresh):
 def split_data_by_thresh(dat, dim, thresh):
     do = sort_for_dim(dat, dim)
     _, idx = first_greater(do.X[:, dim], thresh)
-    return split_data_by_idx(do, dim, idx, sorted_ = True)
+    return split_data_by_idx(do, idx)
 
 
 def build_tree(crit, dat, k, min_samples, alpha):
-    pred, score, se = crit(dat)
+    pred, score, interval = crit(dat)
 
-    leaf = Leaf(pred, score, se, N = dat.y.shape[0])
+    leaf = Leaf(pred, score, interval, N = dat.y.shape[0])
 
     # Stop if max depth is reached
     if k == 0:
@@ -175,7 +170,7 @@ def build_tree(crit, dat, k, min_samples, alpha):
     if split is None or split.gain <= 0:
         return leaf
 
-    dat_l, dat_r = split_data_by_idx(dat, split.dim, split.idx)
+    dat_l, dat_r = split_data_by_thresh(dat, split.dim, split.thresh)
     dim, thresh, gain = split.dim, split.thresh, split.gain
 
     # stop if one side is empty
@@ -208,13 +203,17 @@ def pick_split(x, node):
         return node.right
     return node.left
 
-def predict(x, node, interval=False):
+import scipy.special as sc
+
+def predict(x, node, interval=None):
     while True:
         try:
             node = pick_split(x, node)
         except AttributeError:
             if interval:
-                return (node.prediction, node.se)
+                df, sd = node.interval
+                z = sc.stdtrit(df, interval)
+                return (node.prediction, node.prediction - z*sd, node.prediction + z*sd)
             return node.prediction
 
 
@@ -229,27 +228,73 @@ def score_tree(node, dat, crit):
         return score
 
 
+from copy import deepcopy
+
+def estimate_tree(node, dat, crit):
+    node = deepcopy(node)
+
+    try:
+        dat_l, dat_r = split_data_by_thresh(dat, node.dim, node.thresh)
+        left = estimate_tree(node.left, dat_l, crit)
+        right = estimate_tree(node.right, dat_r, crit)
+        node.left = left
+        node.right = right
+        return node
+
+    except AttributeError:
+        pred, _, interval = crit(dat)
+        if np.isinf(pred):
+            raise Exception('Estimation of tree failed with infinity value!')
+        node.prediction = pred
+        node.interval = interval
+        return node
+
+
+
 from sklearn.base import BaseEstimator, RegressorMixin
 
 class TransferTreeRegressor(RegressorMixin, BaseEstimator):
-    def __init__(self, criterion, max_depth = 10, min_samples_leaf = 2, alpha = 0.5):
+    def __init__(self,
+                 criterion,
+                 max_depth = 10,
+                 min_samples_leaf = 2,
+                 alpha = 0.5,
+                 honest = False):
+
         self.criterion = criterion
         self.max_depth = max_depth
         self.min_samples_leaf = min_samples_leaf
         self.alpha = alpha
+        self.honest = honest
 
     def fit(self, X, y, **fit_params):
         data_, crit = self.criterion(X, y, **fit_params)
 
-        self.tree = build_tree(crit,
-                               data_,
-                               self.max_depth,
-                               self.min_samples_leaf,
-                               self.alpha)
+        if self.honest:
+            N = y.shape[0]
+            S = round(N/2)
+            data_, data_est = split_data_by_idx(data_, S)
 
-    def predict(self, X, interval=False):
+        tree = build_tree(crit,
+                          data_,
+                          self.max_depth,
+                          self.min_samples_leaf,
+                          self.alpha)
+
+        if self.honest:
+            data_, crit = self.criterion(X, y, **{**fit_params, 'min_samples': 0 })
+            _, data_est = split_data_by_idx(data_, S)
+            tree = estimate_tree(tree, data_est, crit)
+
+        self.tree = tree
+        return self
+
+
+    def predict(self, X, interval=None):
         return np.array([predict(x, self.tree, interval) for x in X])
 
     def score(self, X, y, **fit_params):
+
+        # TODO: hardcode min_samples to 1 for scoring?
         data_, crit = self.criterion(X, y, **fit_params)
         return score_tree(self.tree, data_, crit)

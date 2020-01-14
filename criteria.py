@@ -2,6 +2,7 @@ from data import Data, reindex_data
 from numba import njit
 import numpy as np
 from scipy.stats import gaussian_kde
+from collections import namedtuple
 
 @njit
 def _basic_data(X, y, sample_weight):
@@ -25,7 +26,7 @@ def _mse(dat):
 
     w = dat.W[:,0]
     mse = (a**2).dot(w)
-    return m, mse, None
+    return m, mse, np.empty(0, dtype=np.float64)
 
 @njit
 def _mae(dat):
@@ -34,7 +35,7 @@ def _mae(dat):
 
     w = dat.W[:,0]
     mae = np.abs(med - y).dot(w)
-    return med, mae, None
+    return med, mae, np.empty(0, dtype=np.float64)
 
 
 def mse(X, y, sample_weight = None):
@@ -108,6 +109,9 @@ def transfer(X, y, treatment, context_idxs, target_X):
                    [sample_weight, treatment, context_idxs]])
     return Data(W, X, y), _transfer
 
+import scipy.special as sc
+
+Interval = namedtuple('interval', ['df', 'sd'])
 
 @njit
 def _causal(dat):
@@ -121,7 +125,7 @@ def _causal(dat):
     samples_t = treatment.sum()
     samples_c = treatment.shape[0] - samples_t
     if samples_c < min_samples or samples_t < min_samples:
-        return np.inf, np.inf, np.inf
+        return np.inf, np.inf, np.array([np.inf, np.inf], dtype=np.float64)
 
     tau, t_var, c_var = _calc_treatment_stats(w, treatment, dat.y)
 
@@ -132,7 +136,14 @@ def _causal(dat):
     score *= 2 # double to make up for var_weight
     score *= w.sum() # weight by weights of leaf
 
-    return tau, score, np.sqrt(est_var)
+    # confidence interval
+    eps = 1e-8
+    c_var, t_var = c_var + eps, t_var + eps
+    df = est_var**2
+    df /= ((c_var**2 / (samples_c**3)) + (t_var**2 / samples_t**3 ))
+    sd = np.sqrt(est_var)
+
+    return tau, score, np.array([df, sd], dtype=np.float64)
 
 
 def causal_tree_criterion(X, y, treatment,
