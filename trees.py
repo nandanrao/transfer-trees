@@ -4,11 +4,9 @@ from collections import namedtuple
 from data import subset_data, reindex_data
 from dataclasses import dataclass
 from typing import Union
+import scipy.special as sc
+from sklearn.base import BaseEstimator, RegressorMixin
 
-# TODO:
-#
-# 1. Add support for weighting
-# 2. Create Criterion for treatment effects
 
 Split = namedtuple('Split', ['dim', 'idx', 'thresh', 'gain'])
 
@@ -27,18 +25,18 @@ class Leaf():
         return 1
 
 class Node():
-    def __init__(self, dim, thresh, gain, tot_gain, score, prediction, left, right):
+    def __init__(self, leaf, dim, thresh, left, right, gain = None, tot_gain=None):
+        self.leaf = leaf
+        self.score = leaf.score
         self.dim = dim
         self.thresh = thresh
         self.gain = gain
         self.tot_gain = tot_gain
-        self.prediction = prediction
-        self.score = score
         self.left = left
         self.right = right
 
     def __str__(self, level=1):
-        d,t,s,g,tg = self.dim, self.thresh, self.score, self.gain, self.tot_gain
+        d,t,s,g,tg = self.dim, self.thresh, self.leaf.score, self.gain, self.tot_gain
 
         ret = "   " * (level-1) + "|--" + \
               'dim: {0}, thresh: {1:.4f}, score: {2:.4f}, gain: {3:.4f}, tot_gain: {4:.4f} \n'.format(d, t, s, g, tg)
@@ -110,7 +108,7 @@ def sort_for_dim(dat, p):
     idx = np.argsort(dat.X[:,p])
     return reindex_data(dat, idx)
 
-@njit(parallel=True)
+@njit()
 def find_next_split(crit, dat, min_samples):
     # pick dim with greatest gain (from dims)
     # return dim/threshold/gain
@@ -155,7 +153,7 @@ def split_data_by_thresh(dat, dim, thresh):
     return split_data_by_idx(do, idx)
 
 
-def build_tree(crit, dat, k, min_samples, alpha):
+def build_tree(crit, dat, k, min_samples):
     pred, score, interval = crit(dat)
 
     leaf = Leaf(pred, score, interval, N = dat.y.shape[0])
@@ -178,23 +176,10 @@ def build_tree(crit, dat, k, min_samples, alpha):
         return leaf
 
     # Depth-first tree building
-    left = build_tree(crit, dat_l, k-1, min_samples, alpha)
-    right = build_tree(crit, dat_r, k-1, min_samples, alpha)
+    left = build_tree(crit, dat_l, k-1, min_samples)
+    right = build_tree(crit, dat_r, k-1, min_samples)
 
-    tot_gain = gain
-    for child in [left, right]:
-        if isinstance(child, Node):
-            tot_gain += child.tot_gain
-
-    node = Node(dim, thresh, gain, tot_gain, pred, score, left, right)
-
-    # Compute effective alpha, the penalty parameter required to
-    # make this node's split useless. If less than penalty,
-    # prune this node.
-    eff_alpha = tot_gain / (node.leaves() - 1)
-    if eff_alpha < alpha:
-        return leaf
-
+    node = Node(leaf, dim, thresh, left, right)
     return node
 
 
@@ -202,8 +187,6 @@ def pick_split(x, node):
     if x[node.dim] >= node.thresh:
         return node.right
     return node.left
-
-import scipy.special as sc
 
 def predict(x, node, interval=None):
     while True:
@@ -230,35 +213,91 @@ def score_tree(node, dat, crit):
 
 from copy import deepcopy
 
+
 def estimate_tree(node, dat, crit):
-    node = deepcopy(node)
+    pred, score, interval = crit(dat)
+
+    if np.isinf(pred):
+        raise Exception('Estimation of tree failed with infinity value!')
+
+    leaf = Leaf(pred, score, interval, dat.y.shape[0])
 
     try:
         dat_l, dat_r = split_data_by_thresh(dat, node.dim, node.thresh)
         left = estimate_tree(node.left, dat_l, crit)
         right = estimate_tree(node.right, dat_r, crit)
-        node.left = left
-        node.right = right
+
+        node = Node(leaf, node.dim, node.thresh, left, right)
+
+        gain = score - (node.left.score + node.right.score)
+        tot_gain = gain
+        for child in [left, right]:
+            if isinstance(child, Node):
+                tot_gain += child.tot_gain
+
+        node.gain, node.tot_gain = gain, tot_gain
         return node
 
     except AttributeError:
-        pred, _, interval = crit(dat)
-        if np.isinf(pred):
-            raise Exception('Estimation of tree failed with infinity value!')
-        node.prediction = pred
-        node.interval = interval
+        return leaf
+
+
+def prune_tree(node, alpha):
+    node = deepcopy(node)
+
+    try:
+        eff_alpha = node.tot_gain / (node.leaves() - 1)
+
+    except AttributeError:
+        # It is a leaf, so just return it
         return node
 
+    if eff_alpha <= alpha:
+        return node.leaf
 
+    node.left = prune_tree(node.left, alpha)
+    node.right = prune_tree(node.right, alpha)
 
-from sklearn.base import BaseEstimator, RegressorMixin
+    # tot_gain needs to change!
+    tot_gain = node.gain
+
+    for child in [node.left, node.right]:
+        if isinstance(child, Node):
+            tot_gain += child.tot_gain
+
+    node.tot_gain = tot_gain
+
+    return node
+
+def get_min_trim(node):
+    try:
+        alpha = node.tot_gain / (node.leaves() - 1)
+        children = [get_min_trim(c) for c in
+                    [node.left, node.right]]
+        children = [c for c in children if c]
+        return min([alpha] + children)
+    except AttributeError:
+        return None
+
+def _trimmed_trees(node):
+    alpha = get_min_trim(node)
+    if not alpha:
+        return []
+
+    new_tree = prune_tree(node, alpha)
+    results = [(alpha, new_tree)]
+    return results + _trimmed_trees(new_tree)
+
+def get_trimmed_trees(node):
+    return [(-np.inf, node)] + _trimmed_trees(node)
+
 
 class TransferTreeRegressor(RegressorMixin, BaseEstimator):
     def __init__(self,
                  criterion,
                  max_depth = 10,
                  min_samples_leaf = 2,
-                 alpha = 0.5,
+                 alpha = None,
                  honest = False):
 
         self.criterion = criterion
@@ -278,15 +317,27 @@ class TransferTreeRegressor(RegressorMixin, BaseEstimator):
         tree = build_tree(crit,
                           data_,
                           self.max_depth,
-                          self.min_samples_leaf,
-                          self.alpha)
+                          self.min_samples_leaf)
+
+        # estimation
+        data_, crit = self.criterion(X, y, **{**fit_params, 'min_samples': 0 })
 
         if self.honest:
-            data_, crit = self.criterion(X, y, **{**fit_params, 'min_samples': 0 })
             _, data_est = split_data_by_idx(data_, S)
             tree = estimate_tree(tree, data_est, crit)
+        else:
+            tree = estimate_tree(tree, data_, crit)
 
-        self.tree = tree
+
+        alpha = self.alpha if self.alpha is not None else 0.
+
+        self.og_tree = tree
+        self.tree_path = get_trimmed_trees(tree)
+        try:
+            self.tree = [t for a,t in self.tree_path if a <= alpha][-1]
+        except IndexError:
+            self.tree = self.tree_path[0][1]
+
         return self
 
 
@@ -294,7 +345,5 @@ class TransferTreeRegressor(RegressorMixin, BaseEstimator):
         return np.array([predict(x, self.tree, interval) for x in X])
 
     def score(self, X, y, **fit_params):
-
-        # TODO: hardcode min_samples to 1 for scoring?
-        data_, crit = self.criterion(X, y, **fit_params)
+        data_, crit = self.criterion(X, y, **{**fit_params, 'min_samples': 0 })
         return score_tree(self.tree, data_, crit)

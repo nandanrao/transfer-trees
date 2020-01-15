@@ -1,5 +1,6 @@
 import numpy as np
 import trees as t
+from trees import Leaf, Node
 from data import Data, dataset
 from criteria import mse, mae, causal_tree_criterion
 
@@ -172,8 +173,7 @@ def test_build_tree_obeys_min_samples():
     tree = t.build_tree(crit,
                         dat,
                         k = 30,
-                        min_samples = 2,
-                        alpha = 0.5)
+                        min_samples = 2)
 
     assert tree.thresh == 6.5
     assert tree.left.thresh == 4.5
@@ -184,8 +184,7 @@ def test_build_tree_obeys_min_samples():
     tree = t.build_tree(crit,
                         dat,
                         k = 30,
-                        min_samples = 3,
-                        alpha = 0.5)
+                        min_samples = 3)
 
     assert tree.thresh == 6.5
     assert type(tree.left) == t.Leaf
@@ -194,8 +193,7 @@ def test_build_tree_obeys_min_samples():
     tree = t.build_tree(crit,
                         dat,
                         k = 30,
-                        min_samples = 1,
-                        alpha = 0.5)
+                        min_samples = 1)
 
     assert tree.thresh == 6.5
     assert tree.left.thresh == 4.5
@@ -209,33 +207,6 @@ def test_build_tree_obeys_min_samples():
     assert tree.right.right.dim == 0
     assert tree.right.right.thresh == 10.5
 
-def test_build_tree_obeys_alpha():
-    X = np.array([[1,10],
-                  [20,9],
-                  [30,8],
-                  [4,7],
-                  [5,6],
-                  [60,5],
-                  [7,4],
-                  [8,3]])
-    y = np.array([10,20,30,40,50,60,70,80], dtype=np.float64)
-    dat, crit = mse(X, y)
-    tree = t.build_tree(crit,
-                        dat,
-                        k = 30,
-                        min_samples = 1,
-                        alpha = 0.0)
-
-
-    assert tree.leaves() == 8
-
-    tree = t.build_tree(crit,
-                        dat,
-                        k = 30,
-                        min_samples = 1,
-                        alpha = 7.0)
-
-    assert tree.leaves() == 4
 
 def test_estimate_trees_replaces_predictions():
     X = np.array([[1,10],
@@ -249,7 +220,7 @@ def test_estimate_trees_replaces_predictions():
     y = np.array([15.,20.,0.,5.,20.,25.,35.,40.])
     treatment = np.array([0,0,0,0,1,1,1,1])
     dat, crit = causal_tree_criterion(X, y, treatment, min_samples=1)
-    tree = t.build_tree(crit, dat, k = 30, min_samples = 1, alpha = 0.0)
+    tree = t.build_tree(crit, dat, k = 30, min_samples = 1)
 
     y[4:] += 10
     dat, crit = causal_tree_criterion(X, y, treatment, min_samples=1)
@@ -274,8 +245,7 @@ def test_build_tree_works_with_criterion_with_custom_min_samples():
     tree = t.build_tree(crit,
                         dat,
                         k = 30,
-                        min_samples = 0,
-                        alpha = 0.0)
+                        min_samples = 0)
 
     assert len(tree) == 3
 
@@ -283,11 +253,63 @@ def test_build_tree_works_with_criterion_with_custom_min_samples():
     tree = t.build_tree(crit,
                         dat,
                         k = 30,
-                        min_samples = 0,
-                        alpha = 0.0)
+                        min_samples = 0)
 
     assert len(tree) == 1
 
+def test_get_trim_levels():
+    tree = Node(Leaf(0,0,0,0), 0, 0, gain=.5, tot_gain=.5,
+                left = Leaf(0,0,0,0),
+                right = Leaf(0,0,0,0))
+
+
+    assert t.get_min_trim(tree) == 0.5
+
+    tree = Node(Leaf(0,0,0,0), 0, 0, gain=.15, tot_gain=.40,
+                left = Node(Leaf(0,0,0,0), 0, 0, gain=.25, tot_gain=.25,
+                            left = Leaf(0,0,0,0),
+                            right = Leaf(0,0,0,0)),
+                right = Leaf(0,0,0,0))
+
+    assert t.get_min_trim(tree) == 0.2
+
+def test_prune_tree():
+    tree = Node(Leaf(2,2,2,2), 0, 0, gain=.50, tot_gain=.75,
+                left = Node(Leaf(1,1,1,1), 0, 0, gain=.25, tot_gain=.25,
+                            left = Leaf(0,0,0,0),
+                            right = Leaf(0,0,0,0)),
+                right = Leaf(1,1,1,1))
+
+
+    new_tree = t.prune_tree(tree, 0.25)
+
+    assert new_tree.leaves() == 2
+    assert tree.leaves() == 3
+    assert new_tree.left.prediction == 1
+
+    new_tree = t.prune_tree(tree, 0.375)
+    assert isinstance(new_tree, Leaf)
+    assert new_tree.prediction == 2
+
+
+def test_get_trimmed_trees():
+    tree = Node(Leaf(0,0,0,0), 0, 0, gain=.50, tot_gain=.75,
+                left = Node(Leaf(0,0,0,0), 0, 0, gain=.25, tot_gain=.25,
+                            left = Leaf(0,0,0,0),
+                            right = Leaf(0,0,0,0)),
+                right = Leaf(0,0,0,0))
+
+    results = t.get_trimmed_trees(tree)
+    assert [alpha for alpha,tree in results] == [0.0, 0.25, 0.5]
+
+    tree = Node(Leaf(0,0,0,0), 0, 0, gain=.15, tot_gain=.40,
+                left = Node(Leaf(0,0,0,0), 0, 0, gain=.25, tot_gain=.25,
+                            left = Leaf(0,0,0,0),
+                            right = Leaf(0,0,0,0)),
+                right = Leaf(0,0,0,0))
+
+    results = t.get_trimmed_trees(tree)
+    assert [alpha for alpha,tree in results] == [0.0, 0.2]
 
 
 # def test_build_tree_works_with_repetitions():
