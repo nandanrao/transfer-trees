@@ -1,6 +1,7 @@
 import numpy as np
 import criteria as c
 from criteria import *
+from data import dataset
 
 X = lambda N: np.random.normal(size = N).reshape(-1, 1)
 
@@ -81,3 +82,49 @@ def test_causal_with_min_samples_inf_score():
                                       min_samples = 5)
 
     assert crit(dat)[1] == np.inf
+
+def test_get_ordered_tau():
+    ordered = get_ordered_tau(np.array([0,0,0,0,1,1,1,1]),
+                              np.array([15.,10.,20.,25.,45., 35., 40., 30.]))
+
+    assert np.all(ordered == np.array([20, 20, 20, 20]))
+
+def test_get_ordered_tau_uneven_arrays():
+    ordered = get_ordered_tau(np.array([0,0,0,0,1,1,1,1,1]),
+                              np.array([15.,10.,20.,25.,45., 35., 40., 30., 45.]))
+
+    assert np.all(ordered == np.array([20, 20, 20, 20, 20]))
+
+def test_wasserstein_differences():
+    ys = [np.array([10.,10.,10.,10.,30.,30.,30.,30.]),
+          np.array([10.,10.,10.,10.,30.,30.,30.,30.]),
+          np.array([10.,10.,10.,10.,30.,30.,30.,30.])
+    ]
+
+    dats = [dataset(None, X(8), ys[i]) for i in range(3)]
+    dist = c._wasserstein_differences(dats)
+    assert dist == 0.0
+
+    ys = [np.array([10.,10.,10.,10.,30.,30.,30.,30.]),
+          np.array([20.,20.,20.,20.,30.,30.,30.,30.]),
+          np.array([30.,30.,30.,30.,30.,30.,30.,30.])
+    ]
+
+    dats = [dataset(None, X(8), ys[i]) for i in range(3)]
+    dist = c._wasserstein_differences(dats)
+    assert np.isclose(dist, 82.857, 2)
+
+
+def test_wasserstein_differences_weighted():
+    # TODO: Implement!!! You have weighted distance
+
+    # ys = [np.array([10.,10.,10.,10.,30.,30.,30.,30.]),
+    #       np.array([10.,10.,10.,10.,30.,30.,30.,30.]),
+    #       np.array([10.,10.,10.,10.,30.,30.,30.,30.])
+    # ]
+
+    # dats = [dataset(None, X(8), ys[i]) for i in range(3)]
+    # dist = c._wasserstein_differences(dats)
+    # assert dist == 0.0
+
+    # assert False

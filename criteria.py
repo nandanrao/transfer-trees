@@ -3,6 +3,7 @@ from numba import njit
 import numpy as np
 from scipy.stats import gaussian_kde
 from collections import namedtuple
+from wasserstein import wasserstein_distance
 
 @njit
 def _basic_data(X, y, sample_weight):
@@ -74,40 +75,127 @@ def _calc_treatment_stats(w, treatment, y):
 
     return est_treatment_effect, t_var, c_var
 
+from itertools import combinations
+
+
+@njit
+def fill_zip(a, b):
+    dif = len(a) - len(b)
+    if dif > 0:
+        add = np.repeat(b[-1], dif)
+        b = np.concatenate((b, add))
+    elif dif < 0:
+        add = np.repeat(a[-1], abs(dif))
+        a = np.concatenate((a, add))
+
+    return list(zip(a,b))
+
+
+
+
+@njit
+def pairs_(a):
+    b = []
+    for i,el in enumerate(a):
+        for ell in a[i+1:]:
+            b.append((el,ell))
+    return b
+
+
+@njit
+def get_ordered_tau(treatment, y):
+    t_vals, c_vals = y[treatment == 1], y[treatment == 0]
+    t_vals.sort()
+    c_vals.sort()
+    z = np.array(fill_zip(t_vals, c_vals))
+    return z[:, 0] - z[:, 1]
+
+@njit
+def _wasserstein_differences(dats):
+    taus = [get_ordered_tau(d.W[:, 1], d.y) for d in dats]
+    combos = pairs_(np.arange(len(dats)))
+    dists = np.array([wasserstein_distance(taus[i], taus[j]) for i,j in combos])
+    return np.sum(dists)
+
 @njit
 def _transfer(dat):
     W = dat.W
-    weights, treatment, context_idxs = W[:, 0], W[:, 1], W[:, 2]
+    w, treatment, context_idxs = W[:, 0], W[:, 1], W[:, 2]
+    min_samples = dat.z[0]
+    tau_var_weight, tau_var_var_weight = dat.z[1], dat.z[2]
+
+    samples_t = treatment.sum()
+    samples_c = treatment.shape[0] - samples_t
+
+    if samples_c < min_samples or samples_t < min_samples:
+        return np.inf, np.inf, np.array([np.inf, np.inf], dtype=np.float64)
 
     # how can this be moved???
     # hacky to hack into W matrix...
     contexts = np.unique(context_idxs)
 
     # get treatment effect per context
+    # TODO: avoid doing this every time (optimize)
+    # Just use a 3-d array for your data!?!? (dat handling would need to support that)
     dats = [reindex_data(dat, context_idxs == i) for i in contexts]
 
-    treatments = [_calc_treatment_stats(d.W[:, 0], d.W[:, 1], d.y) for d in dats]
+
 
     # penalize treatment effect difference (and variance?) between contexts...
-    tau_var = np.var(np.array([tau for tau,_ in treatments])) + \
-        np.var(np.array([var for _,var in treatments]))
+    treatments = [_calc_treatment_stats(d.W[:, 0], d.W[:, 1], d.y) for d in dats]
+    tau_var = np.var(np.array([tau for tau,_,_ in treatments]))
 
+    # also penalize wasserstein distances between different contexts...
+    dists = _wasserstein_differences(dats)
+
+
+    # this variance should be compared to the expected variance, if
+    # given the number of observations...
+    # tau_var_var = np.var(np.array([vt+vc for _,vt,vc in treatments]))
 
     tau, t_var, c_var  = _calc_treatment_stats(w, treatment, dat.y)
 
-    var = t_var + c_var
-    score = (tau_var + 2*var - tau**2) * weights.sum()
+    est_var = c_var/samples_c + t_var/samples_t
+    score = 2 * est_var  # penalize 2* estimator variance
 
-    return tau, score
+    score += tau_var_weight*dists # penalize wasserstein dists
+    score += tau_var_var_weight*tau_var # penalize tau_var_var...
 
 
-def transfer(X, y, treatment, context_idxs, target_X):
+    # score += tau_var_weight*tau_var # penalize tau_var...??? how should this be weighted??
+
+    score -= tau**2 # reward squared treatment effect
+    score *= w.sum() # weight by weights of leaf
+
+    return tau, score, np.empty(0, dtype=np.float64)
+
+
+def transfer(X,
+             y,
+             treatment,
+             context_idxs,
+             target_X,
+             min_samples = 1,
+             tau_var_weight = 0.5,
+             tau_var_var_weight = 0.5,
+             importance = True):
+
     ps, pt = kde_score(X), kde_score(target_X)
-    sample_weight = pt(X) / ps(X)
+
+    sample_weight = np.ones(y.shape[0])
+    if importance:
+        # TODO: This should not take into account all features, only those
+        # we want to consider!!!!!!!!!!! (penalty for invariance)
+        sample_weight = pt(X) / ps(X)
+
     sample_weight /= sample_weight.sum()
+
     W = np.hstack([a.reshape(-1, 1) for a in
                    [sample_weight, treatment, context_idxs]])
-    return Data(W, X, y), _transfer
+
+    z = np.array([min_samples, tau_var_weight, tau_var_var_weight], dtype=np.float64)
+
+    return Data(z, W, X, y), _transfer
 
 import scipy.special as sc
 
@@ -124,6 +212,7 @@ def _causal(dat):
     # Note: this obviously would make gradient optimization a mess
     samples_t = treatment.sum()
     samples_c = treatment.shape[0] - samples_t
+
     if samples_c < min_samples or samples_t < min_samples:
         return np.inf, np.inf, np.array([np.inf, np.inf], dtype=np.float64)
 
