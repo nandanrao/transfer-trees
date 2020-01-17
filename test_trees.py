@@ -255,7 +255,7 @@ def test_build_tree_works_with_criterion_with_custom_min_samples():
                         k = 30,
                         min_samples = 0)
 
-    assert len(tree) == 1
+    assert len(tree) == 2
 
 def test_get_trim_levels():
     tree = Node(Leaf(0,0,0,0), 0, 0, gain=.5, tot_gain=.5,
@@ -294,13 +294,13 @@ def test_prune_tree():
 
 def test_get_trimmed_trees():
     tree = Node(Leaf(0,0,0,0), 0, 0, gain=.50, tot_gain=.75,
-                left = Node(Leaf(0,0,0,0), 0, 0, gain=.25, tot_gain=.25,
+               left = Node(Leaf(0,0,0,0), 0, 0, gain=.25, tot_gain=.25,
                             left = Leaf(0,0,0,0),
                             right = Leaf(0,0,0,0)),
                 right = Leaf(0,0,0,0))
 
     results = t.get_trimmed_trees(tree)
-    assert [alpha for alpha,tree in results] == [0.0, 0.25, 0.5]
+    assert [alpha for alpha,tree in results] == [-np.inf, 0.25, 0.5]
 
     tree = Node(Leaf(0,0,0,0), 0, 0, gain=.15, tot_gain=.40,
                 left = Node(Leaf(0,0,0,0), 0, 0, gain=.25, tot_gain=.25,
@@ -309,7 +309,73 @@ def test_get_trimmed_trees():
                 right = Leaf(0,0,0,0))
 
     results = t.get_trimmed_trees(tree)
-    assert [alpha for alpha,tree in results] == [0.0, 0.2]
+    assert [alpha for alpha,tree in results] == [-np.inf, 0.2]
+
+
+def test_feature_importance():
+    tree = Node(Leaf(0,0,0,0), 0, 4, gain=.15, tot_gain=.40,
+                left = Node(Leaf(0,0,0,0), 0, 2, gain=.25, tot_gain=.25,
+                            left = Leaf(0,0,0,0),
+                            right = Leaf(0,0,0,0)),
+                right = Leaf(0,0,0,0))
+
+    X = np.array([[1,10],
+                  [2,9],
+                  [3,8],
+                  [4,7],
+                  [5,6],
+                  [6,5],
+                  [7,4],
+                  [8,3]])
+    y = np.array([10,20,30,40,50,60,70,80], dtype=np.float64)
+    w = np.array([1,1,1,1,1,1,1,1], dtype=np.float64).reshape(-1,1)
+    w /= w.sum()
+
+    dat = dataset(w, X, y)
+
+    importance = t.feature_importance(tree, dat)
+    expected = np.array([1.0*.15 + 0.5*.25, 0.0])
+    expected /= expected.sum()
+    assert np.all(importance == expected)
+
+    tree = Node(Leaf(0,0,0,0), 0, 4, gain=.15, tot_gain=.40,
+                left = Node(Leaf(0,0,0,0), 1, 8, gain=.25, tot_gain=.25,
+                            left = Leaf(0,0,0,0),
+                            right = Leaf(0,0,0,0)),
+                right = Leaf(0,0,0,0))
+
+    importance = t.feature_importance(tree, dat)
+    expected = np.array([1.0*.15, 0.5*.25])
+    expected /= expected.sum()
+    assert np.all(importance == expected)
+
+def test_feature_importance_works_with_weights():
+
+    tree = Node(Leaf(0,0,0,0), 0, 4, gain=.15, tot_gain=.40,
+                left = Node(Leaf(0,0,0,0), 1, 8, gain=.25, tot_gain=.25,
+                            left = Leaf(0,0,0,0),
+                            right = Leaf(0,0,0,0)),
+                right = Leaf(0,0,0,0))
+
+    X = np.array([[1,10],
+                  [2,9],
+                  [3,8],
+                  [4,7],
+                  [5,6],
+                  [6,5],
+                  [7,4],
+                  [8,3]])
+    y = np.array([10,20,30,40,50,60,70,80], dtype=np.float64)
+
+    w = np.array([1,1,1,1,3,3,3,3], dtype=np.float64).reshape(-1,1)
+    w /= w.sum()
+
+    dat = dataset(w, X, y)
+
+    importance = t.feature_importance(tree, dat)
+    expected = np.array([1.0*.15, 0.25*.25])
+    expected /= expected.sum()
+    assert np.all(importance == expected)
 
 
 # def test_build_tree_works_with_repetitions():
