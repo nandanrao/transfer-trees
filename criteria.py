@@ -167,7 +167,14 @@ def _transfer(dat):
     score -= tau**2 # reward squared treatment effect
     score *= w.sum() # weight by weights of leaf
 
-    return tau, score, np.empty(0, dtype=np.float64)
+    # confidence interval
+    eps = 1e-8
+    c_var, t_var = c_var + eps, t_var + eps
+    df = est_var**2
+    df /= ((c_var**2 / (samples_c**3)) + (t_var**2 / samples_t**3 ))
+    sd = np.sqrt(est_var)
+
+    return tau, score, np.array([df, sd], dtype=np.float64)
 
 
 def transfer(X,
