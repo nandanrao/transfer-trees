@@ -28,7 +28,7 @@ def _mse(dat):
 
     w = dat.W[:,0]
     mse = (a**2).dot(w)
-    return m, mse, np.empty(0, dtype=np.float64)
+    return m, np.array([mse]), np.empty(0, dtype=np.float64)
 
 @njit
 def _mae(dat):
@@ -37,7 +37,7 @@ def _mae(dat):
 
     w = dat.W[:,0]
     mae = np.abs(med - y).dot(w)
-    return med, mae, np.empty(0, dtype=np.float64)
+    return med, np.array([mae]), np.empty(0, dtype=np.float64)
 
 
 def mse(X, y, sample_weight = None):
@@ -146,7 +146,7 @@ def _transfer(dat):
     samples_c = treatment.shape[0] - samples_t
 
     if samples_c < min_samples or samples_t < min_samples:
-        return np.inf, np.inf, np.array([np.inf, np.inf], dtype=np.float64)
+        return np.inf, np.array([np.inf]), np.array([np.inf, np.inf], dtype=np.float64)
 
     # how can this be moved???
     # hacky to hack into W matrix...
@@ -187,7 +187,7 @@ def _transfer(dat):
     df /= ((c_var**2 / (samples_c**3)) + (t_var**2 / samples_t**3 ))
     sd = np.sqrt(est_var)
 
-    return tau, score, np.array([df, sd], dtype=np.float64)
+    return tau, np.array([score, tau**2, 2*est_var, tau_var]), np.array([df, sd], dtype=np.float64)
 
 
 def transfer(X,
@@ -251,7 +251,7 @@ def _causal(dat):
     samples_c = treatment.shape[0] - samples_t
 
     if samples_c < min_samples or samples_t < min_samples:
-        return np.inf, np.inf, np.array([np.inf, np.inf], dtype=np.float64)
+        return np.inf, np.array([np.inf]), np.array([np.inf, np.inf], dtype=np.float64)
 
     tau, t_var, c_var = _calc_treatment_stats(w, treatment, dat.y)
 
@@ -269,7 +269,7 @@ def _causal(dat):
     df /= ((c_var**2 / (samples_c**3)) + (t_var**2 / samples_t**3 ))
     sd = np.sqrt(est_var)
 
-    return tau, score, np.array([df, sd], dtype=np.float64)
+    return tau, np.array([score, tau**2, 2*est_var]), np.array([df, sd], dtype=np.float64)
 
 
 def causal_tree_criterion(X, y, treatment,

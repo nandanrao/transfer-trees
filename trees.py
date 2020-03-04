@@ -6,20 +6,26 @@ from dataclasses import dataclass
 from typing import Union
 import scipy.special as sc
 from sklearn.base import BaseEstimator, RegressorMixin
-
+from copy import deepcopy
 
 Split = namedtuple('Split', ['dim', 'idx', 'thresh', 'gain'])
 
 class Leaf():
-    def __init__(self, prediction, score, interval, N):
+    def __init__(self, prediction, scores, interval, N):
         self.prediction = prediction
         self.interval = interval
-        self.score = score
+        self.scores = scores
         self.N = N
+
+    def print_scores(self):
+        return ' || '.join([f'{s:.3f}' for s in self.scores])
 
     def __str__(self, level=1):
         return "   " * (level-1) + "|--" + \
-            f'pred: {self.prediction:.4f}, score: {self.score:.4f}, N: {self.N} \n'
+            f'pred: {self.prediction:.4f}, scores: {self.print_scores()}, N: {self.N} \n'
+
+    def __repr__(self):
+        return str(self)
 
     def __len__(self):
         return 1
@@ -27,7 +33,7 @@ class Leaf():
 class Node():
     def __init__(self, leaf, dim, thresh, left, right, gain = None, tot_gain=None):
         self.leaf = leaf
-        self.score = leaf.score
+        self.scores = leaf.scores
         self.dim = dim
         self.thresh = thresh
         self.gain = gain
@@ -35,16 +41,19 @@ class Node():
         self.left = left
         self.right = right
 
+    def print_scores(self):
+        return ' || '.join([f'{s:.3f}' for s in self.leaf.scores])
+
     def __str__(self, level=1):
         if self.gain:
             ret = "   " * (level-1) + "|--" + \
                 f'dim: {self.dim}, thresh: {self.thresh:.4f} ' + \
-                f'score: {self.leaf.score:.4f}, gain: {self.gain:.4f}, ' + \
+                f'scores: {self.print_scores()}, gain: {self.gain:.4f}, ' + \
                 f'tot_gain: {self.tot_gain:.4f} \n'
         else:
             ret = "   " * (level-1) + "|--" + \
                 f'dim: {self.dim}, thresh: {self.thresh:.4f}, ' + \
-                f'score: {self.leaf.score:.4f}, \n'
+                f'scores: {self.print_scores()}, \n'
 
         for child in [self.left, self.right]:
             ret += child.__str__(level+1)
@@ -92,7 +101,8 @@ def find_threshold(crit, dat, p, mn, mx):
     N, _ = X.shape
 
     # bucket for large x? No need to enumerate everything!
-    _, base, __ = crit(dat)
+    _, scores, __ = crit(dat)
+    base = scores[0]
     idxs = get_indices(X, p, mn, mx)
     loss, idx, thresh = np.inf, mn, X[mn, p]
 
@@ -101,7 +111,7 @@ def find_threshold(crit, dat, p, mn, mx):
         _, left, __ = crit(left_dat)
         _, right, __ = crit(right_dat)
 
-        curr_loss = left + right
+        curr_loss = left[0] + right[0]
 
         if curr_loss < loss:
             loss, idx = curr_loss, i
@@ -160,9 +170,9 @@ def split_data_by_thresh(dat, dim, thresh):
 
 
 def build_tree(crit, dat, k, min_samples):
-    pred, score, interval = crit(dat)
+    pred, scores, interval = crit(dat)
 
-    leaf = Leaf(pred, score, interval, N = dat.y.shape[0])
+    leaf = Leaf(pred, scores, interval, N = dat.y.shape[0])
 
     # Stop if max depth is reached
     if k == 0:
@@ -213,20 +223,20 @@ def score_tree(node, dat, crit):
         right = score_tree(node.right, dat_r, crit)
         return left + right
     except AttributeError:
-        _, score, _ = crit(dat)
-        return score
+        _, scores, _ = crit(dat)
+        return scores[0]
 
 
-from copy import deepcopy
+
 
 
 def estimate_tree(node, dat, crit):
-    pred, score, interval = crit(dat)
+    pred, scores, interval = crit(dat)
 
     if np.isinf(pred):
         raise Exception(f'Estimation of tree failed with infinity value! dat: {dat.X.shape[0]}')
 
-    leaf = Leaf(pred, score, interval, dat.y.shape[0])
+    leaf = Leaf(pred, scores, interval, dat.y.shape[0])
 
     try:
         dat_l, dat_r = split_data_by_thresh(dat, node.dim, node.thresh)
@@ -235,7 +245,7 @@ def estimate_tree(node, dat, crit):
 
         node = Node(leaf, node.dim, node.thresh, left, right)
 
-        gain = score - (node.left.score + node.right.score)
+        gain = scores[0] - (node.left.scores[0] + node.right.scores[0])
         tot_gain = gain
         for child in [left, right]:
             if isinstance(child, Node):
@@ -326,7 +336,7 @@ def collect_score(node):
         right = collect_score(node.right)
         return left + right
     except AttributeError:
-        return node.score
+        return node.scores[0]
 
 
 class TransferTreeRegressor(RegressorMixin, BaseEstimator):
