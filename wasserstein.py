@@ -2,7 +2,7 @@ from numba import njit
 import numpy as np
 
 @njit
-def _cdf_distance(p, u_values, v_values, u_weights=None, v_weights=None):
+def _cdf_distance(p, u_values, v_values, u_weights, v_weights):
     u_sorter = np.argsort(u_values)
     v_sorter = np.argsort(v_values)
 

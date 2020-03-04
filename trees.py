@@ -291,6 +291,9 @@ def _importance(node, dat, importances, gain):
 def feature_importance(node, dat, gain=True):
     dims = dat.X.shape[1]
     importances = np.zeros((dims,))
+    if type(node) is Leaf:
+        return importances
+
     importances = _importance(node, dat, importances, gain=gain)
     importances /= importances.sum()
     return importances

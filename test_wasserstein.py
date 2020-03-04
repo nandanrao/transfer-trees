@@ -7,3 +7,9 @@ def test_cdf():
     b = np.random.normal(size=20)
     res = wasserstein_distance(a, b)
     assert np.isclose(res, scipy.stats.wasserstein_distance(a, b))
+
+def test_diff_size():
+    a = np.random.normal(size=20)
+    b = np.random.normal(size=20)
+    res = wasserstein_distance(a, b)
+    assert np.isclose(res, scipy.stats.wasserstein_distance(a, b))

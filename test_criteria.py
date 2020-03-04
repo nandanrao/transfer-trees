@@ -95,36 +95,101 @@ def test_get_ordered_tau_uneven_arrays():
 
     assert np.all(ordered == np.array([20, 20, 20, 20, 20]))
 
-def test_wasserstein_differences():
+def test_wasserstein_differences_same():
     ys = [np.array([10.,10.,10.,10.,30.,30.,30.,30.]),
           np.array([10.,10.,10.,10.,30.,30.,30.,30.]),
-          np.array([10.,10.,10.,10.,30.,30.,30.,30.])
-    ]
+          np.array([10.,10.,10.,10.,30.,30.,30.,30.])]
 
-    dats = [dataset(None, X(8), ys[i]) for i in range(3)]
+    treatment = np.array([0,0,0,0,1,1,1,1])
+    W = np.vstack([np.ones(8), treatment]).T
+
+    dats = [dataset(W, X(8), ys[i]) for i in range(3)]
     dist = c._wasserstein_differences(dats)
-    assert dist == 0.0
+    assert np.isclose(dist, 0.0, 1e-6)
 
+def test_wasserstein_differences_different():
     ys = [np.array([10.,10.,10.,10.,30.,30.,30.,30.]),
           np.array([20.,20.,20.,20.,30.,30.,30.,30.]),
-          np.array([30.,30.,30.,30.,30.,30.,30.,30.])
+          np.array([30.,30.,30.,30.,30.,30.,30.,30.])]
+
+    treatment = np.array([0,0,0,0,1,1,1,1,])
+    W = np.vstack([np.ones(8), treatment]).T
+
+    dats = [dataset(W, X(8), ys[i]) for i in range(3)]
+    dist = c._wasserstein_differences(dats)
+    assert np.isclose(dist, 13.3333, 1e-3)
+
+def test_wasserstein_differences_weighted_small():
+    ys = [np.array([20.,20.,20.,20.,20.,20.,30.,30.,30.,30.,30.,30.]),
+          np.array([20.,20.,20.,20.,20.,20.,30.,30.,30.,30.,30.,30.]),
+          np.array([40., 60.])
     ]
 
-    dats = [dataset(None, X(8), ys[i]) for i in range(3)]
+    treatment = np.array([0,0,0,0,0,0,1,1,1,1,1,1])
+    W = np.vstack([np.ones(12), treatment]).T
+    W2 = np.vstack([np.ones(2), np.array([0,1])]).T
+
+    dats = [dataset(W, X(12), ys[0]),
+            dataset(W, X(12), ys[1]),
+            dataset(W2, X(2), ys[2])]
+
     dist = c._wasserstein_differences(dats)
-    assert np.isclose(dist, 82.857, 2)
+    assert np.isclose(dist, 2.5, 1e-3)
+
+def test_wasserstein_differences_weighted_larger():
+    ys = [np.array([10.,10.,10.,10.,30.,30.,30.,30.]),
+          np.array([20.,20.,20.,20.,30.,30.,30.,30.]),
+          np.array([40., 60.])
+    ]
+    treatment = np.array([0,0,0,0,1,1,1,1])
+    W = np.vstack([np.ones(8), treatment]).T
+    W2 = np.vstack([np.ones(2), np.array([0,1])]).T
+
+    dats = [dataset(W, X(7), ys[0]),
+            dataset(W, X(7), ys[1]),
+            dataset(W2, X(2), ys[2])]
+
+    dist = c._wasserstein_differences(dats)
+    assert np.isclose(dist, 8.333, 1e-3)
+
+def test_tau_variances_same():
+    ys = [np.array([10.,10.,10.,10.,30.,30.,30.,30.]),
+          np.array([10.,10.,10.,10.,30.,30.,30.,30.]),
+          np.array([10.,10.,10.,10.,30.,30.,30.,30.])]
+
+    treatment = np.array([0,0,0,0,1,1,1,1,])
+    W = np.vstack([np.ones(8), treatment]).T
+
+    dats = [dataset(W, X(8), ys[i]) for i in range(3)]
+    dist = c._tau_variances(dats)
+    assert np.isclose(dist, 0.0, 1e-6)
 
 
-def test_wasserstein_differences_weighted():
-    # TODO: Implement!!! You have weighted distance
+def test_tau_variances_different():
+    ys = [np.array([10.,10.,10.,10.,30.,30.,30.,30.]),
+          np.array([20.,20.,20.,20.,30.,30.,30.,30.]),
+          np.array([30.,30.,30.,30.,30.,30.,30.,30.])]
 
-    # ys = [np.array([10.,10.,10.,10.,30.,30.,30.,30.]),
-    #       np.array([10.,10.,10.,10.,30.,30.,30.,30.]),
-    #       np.array([10.,10.,10.,10.,30.,30.,30.,30.])
-    # ]
+    treatment = np.array([0,0,0,0,1,1,1,1,])
+    W = np.vstack([np.ones(8), treatment]).T
 
-    # dats = [dataset(None, X(8), ys[i]) for i in range(3)]
-    # dist = c._wasserstein_differences(dats)
-    # assert dist == 0.0
+    dats = [dataset(W, X(8), ys[i]) for i in range(3)]
+    dist = c._tau_variances(dats)
+    assert np.isclose(dist, 66.666, 1e-3)
 
-    # assert False
+def test_tau_variances_weighted_small():
+    ys = [np.array([20.,20.,20.,20.,20.,20.,30.,30.,30.,30.,30.,30.]),
+          np.array([20.,20.,20.,20.,20.,20.,30.,30.,30.,30.,30.,30.]),
+          np.array([40., 60.])
+    ]
+
+    treatment = np.array([0,0,0,0,0,0,1,1,1,1,1,1])
+    W = np.vstack([np.ones(12), treatment]).T
+    W2 = np.vstack([np.ones(2), np.array([0,1])]).T
+
+    dats = [dataset(W, X(12), ys[0]),
+            dataset(W, X(12), ys[1]),
+            dataset(W2, X(2), ys[2])]
+
+    dist = c._tau_variances(dats)
+    assert np.isclose(dist, 7.101, 1e-3)
