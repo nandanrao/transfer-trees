@@ -125,6 +125,14 @@ def _wasserstein_differences(dats):
     # sum based on weights!
     return np.dot(dists, weights)
 
+
+@njit
+def _cross_expectations(tau, dats):
+    stats = [_calc_treatment_stats(d.W[:, 0], d.W[:, 1], d.y) for d in dats]
+    taus = np.array([t for t, _, _ in stats])
+    xp = np.mean(np.array([tau*t for t in taus]))
+    return 2*xp - np.mean(taus**2)
+
 @njit
 def _tau_variances(dats):
     treatments = [_calc_treatment_stats(d.W[:, 0], d.W[:, 1], d.y) for d in dats]
@@ -140,7 +148,7 @@ def _transfer(dat):
     w, treatment, context_idxs = W[:, 0], W[:, 1], W[:, 2]
     min_samples = dat.z[0]
     mean_weight, var_weight = dat.z[1], dat.z[2]
-    tau_var_weight, wasserstein_weight = dat.z[3], dat.z[4]
+    tau_var_weight, cross_exp_weight = dat.z[3], dat.z[4]
 
     samples_t = treatment.sum()
     samples_c = treatment.shape[0] - samples_t
@@ -161,9 +169,6 @@ def _transfer(dat):
     # make this weighted variance! Put less weight on contexts with few observations.
     tau_var = _tau_variances(dats)
 
-    # also penalize wasserstein distances between different contexts...
-    dists = _wasserstein_differences(dats)
-
     # this variance should be compared to the expected variance, if
     # given the number of observations...
     # tau_var_var = np.var(np.array([vt+vc for _,vt,vc in treatments]))
@@ -175,8 +180,10 @@ def _transfer(dat):
     score = var_weight * 2 * est_var  # penalize 2* estimator variance
 
     score += tau_var_weight*tau_var # penalize tau_var...
-    score += wasserstein_weight*dists # penalize wasserstein dists
 
+    cross_exp = _cross_expectations(tau, dats)
+
+    score -= cross_exp_weight*cross_exp
     score -= mean_weight * tau**2 # reward squared treatment effect
     score *= w.sum() # weight by weights of leaf
 
@@ -187,7 +194,7 @@ def _transfer(dat):
     df /= ((c_var**2 / (samples_c**3)) + (t_var**2 / samples_t**3 ))
     sd = np.sqrt(est_var)
 
-    return tau, np.array([score, tau**2, 2*est_var, tau_var]), np.array([df, sd], dtype=np.float64)
+    return tau, np.array([score, tau**2, 2*est_var, tau_var, cross_exp]), np.array([df, sd], dtype=np.float64)
 
 
 def transfer(X,
@@ -198,11 +205,11 @@ def transfer(X,
              min_samples = 1,
              var_weight = 0.25,
              tau_var_weight = 0.25,
-             wasserstein_weight = 0.25,
+             cross_exp_weight = 0.25,
              mean_weight = 0.25,
              importance = True):
 
-    if not np.isclose(var_weight + tau_var_weight + wasserstein_weight + mean_weight, 1.0, 1e-5):
+    if not np.isclose(var_weight + tau_var_weight + cross_exp_weight + mean_weight, 1.0, 1e-5):
         raise Exception('Transfer criteria needs weights to add to 1')
 
     ps, pt = kde_score(X), kde_score(target_X)
@@ -230,13 +237,9 @@ def transfer(X,
     W = np.hstack([a.reshape(-1, 1) for a in
                    [sample_weight, treatment, context_idxs]])
 
-    z = np.array([min_samples, mean_weight, var_weight, tau_var_weight, wasserstein_weight], dtype=np.float64)
+    z = np.array([min_samples, mean_weight, var_weight, tau_var_weight, cross_exp_weight], dtype=np.float64)
 
     return Data(z, W, X, y), _transfer
-
-import scipy.special as sc
-
-Interval = namedtuple('interval', ['df', 'sd'])
 
 @njit
 def _causal(dat):
