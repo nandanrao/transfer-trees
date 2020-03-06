@@ -64,6 +64,7 @@ def weighted_mean_variance(vals, w):
     var = (vals**2).dot(nw) - mean**2
     return mean, var
 
+
 @njit
 def _calc_treatment_stats(w, treatment, y):
     t_vals, c_vals = y[treatment == 1], y[treatment == 0]
@@ -125,6 +126,24 @@ def _wasserstein_differences(dats):
     # sum based on weights!
     return np.dot(dists, weights)
 
+def _get_vals_weights(dat):
+    W = dat.W
+    w, treatment, context_idxs = W[:, 0], W[:, 1], W[:, 2]
+
+    t_vals, c_vals = y[treatment == 1], y[treatment == 0]
+    # weighted mean based on weights within leaf
+    t_weight, c_weight = w[treatment == 1], w[treatment == 0]
+
+    return (t_vals, t_weight), (c_vals, c_weight)
+
+@njit
+def _crosser(da, db):
+    # both are dat objects
+    # (ta - ca)(tb - cb)
+    # tatb + cacb - tacb - tbca
+    # -cov(ta, tb) - cov(ca, cb) + cov(ta, cb) + cov(tb, ca)
+    pass
+
 
 @njit
 def _cross_expectations(tau, dats):
@@ -132,6 +151,9 @@ def _cross_expectations(tau, dats):
     taus = np.array([t for t, _, _ in stats])
     xp = np.mean(np.array([tau*t for t in taus]))
     return 2*xp - np.mean(taus**2)
+
+    # xp = np.mean(np.array([a*b for a,b in pairs_(taus)]))
+    # return 2*xp - np.mean(taus**2)
 
 @njit
 def _tau_variances(dats):

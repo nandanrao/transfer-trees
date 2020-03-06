@@ -95,7 +95,7 @@ def get_indices(X, p, mn, mx):
     return idxs[(idxs >= mn) & (idxs <= mx)]
 
 
-@njit()
+@njit
 def find_threshold(crit, dat, p, mn, mx):
     X = dat.X
     N, _ = X.shape
@@ -124,7 +124,7 @@ def sort_for_dim(dat, p):
     idx = np.argsort(dat.X[:,p])
     return reindex_data(dat, idx)
 
-@njit()
+@njit
 def find_next_split(crit, dat, min_samples):
     # pick dim with greatest gain (from dims)
     # return dim/threshold/gain
