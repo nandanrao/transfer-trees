@@ -100,7 +100,6 @@ def pairs_(a):
             b.append((el,ell))
     return b
 
-
 @njit
 def get_ordered_tau(treatment, y):
     t_vals, c_vals = y[treatment == 1], y[treatment == 0]
@@ -126,31 +125,44 @@ def _wasserstein_differences(dats):
     # sum based on weights!
     return np.dot(dists, weights)
 
-def _get_vals_weights(dat):
-    W = dat.W
-    w, treatment, context_idxs = W[:, 0], W[:, 1], W[:, 2]
+# @njit
+# def _get_vals_weights(dat):
+#     y, W = dat.y, dat.W
+#     w, treatment, context_idxs = W[:, 0], W[:, 1], W[:, 2]
 
-    t_vals, c_vals = y[treatment == 1], y[treatment == 0]
-    # weighted mean based on weights within leaf
-    t_weight, c_weight = w[treatment == 1], w[treatment == 0]
+#     t_vals, c_vals = y[treatment == 1], y[treatment == 0]
+#     # weighted mean based on weights within leaf
+#     t_weight, c_weight = w[treatment == 1], w[treatment == 0]
 
-    return (t_vals, t_weight), (c_vals, c_weight)
+#     return (t_vals, t_weight), (c_vals, c_weight)
 
-@njit
-def _crosser(da, db):
-    # both are dat objects
-    # (ta - ca)(tb - cb)
-    # tatb + cacb - tacb - tbca
-    # -cov(ta, tb) - cov(ca, cb) + cov(ta, cb) + cov(tb, ca)
-    pass
+# @njit
+# def _xe(a, b, aw, bw):
+#     # TODO: weighted covariance!
+#     cov = np.cov(a,b)[1][1]
+#     return np.mean(a)*np.mean(b) + cov
+
+# @njit
+# def _crosser(da, db):
+#     (ta, taw), (ca, caw) = _get_vals_weights(da)
+#     (tb, tbw), (cb, cbw) = _get_vals_weights(db)
+
+#     return _xe(ta, tb, taw, tbw) \
+#         + _xe(ca, cb, caw, cbw) \
+#         - _xe(ta, cb, taw, cbw) \
+#         - _xe(tb, ca, tbw, caw)
 
 
 @njit
 def _cross_expectations(tau, dats):
     stats = [_calc_treatment_stats(d.W[:, 0], d.W[:, 1], d.y) for d in dats]
     taus = np.array([t for t, _, _ in stats])
-    xp = np.mean(np.array([tau*t for t in taus]))
-    return 2*xp - np.mean(taus**2)
+    xp = np.mean(taus)
+    return 2*xp*tau - np.mean(taus**2)
+
+    # this is nice because it more explicitly shows the dependence
+    # xp = np.mean(np.array([tau*t for t in taus]))
+    # return 2*xp - np.mean(taus**2)
 
     # xp = np.mean(np.array([a*b for a,b in pairs_(taus)]))
     # return 2*xp - np.mean(taus**2)
