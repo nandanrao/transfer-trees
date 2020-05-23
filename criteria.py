@@ -1,4 +1,4 @@
-from data import Data, reindex_data
+from data import Data, reindex_data, stack_data, modify_z, sample_split_data
 from numba import njit
 import numpy as np
 from scipy.stats import gaussian_kde
@@ -6,9 +6,9 @@ from collections import namedtuple
 from wasserstein import wasserstein_distance
 from itertools import combinations
 
-@njit
+@njit(cache=True)
 def _basic_data(X, y, sample_weight):
-    N,P = X.shape
+    N, _ = X.shape
 
     if sample_weight is None:
         sample_weight = np.ones(N)
@@ -20,31 +20,31 @@ def _basic_data(X, y, sample_weight):
 
     return Data(z, W, X, y)
 
-@njit
+@njit(cache=True)
 def _mse(dat):
     y = dat.y
     m = np.mean(y)
     a = (m - y)
 
-    w = dat.W[:,0]
-    mse = (a**2).dot(w)
-    return m, np.array([mse]), np.empty(0, dtype=np.float64)
+    w = dat.W[:, 0]
+    score = (a**2).dot(w)
+    return m, np.array([score]), np.empty(0, dtype=np.float64)
 
-@njit
+@njit(cache=True)
 def _mae(dat):
     y = dat.y
     med = np.median(y)
 
-    w = dat.W[:,0]
-    mae = np.abs(med - y).dot(w)
-    return med, np.array([mae]), np.empty(0, dtype=np.float64)
+    w = dat.W[:, 0]
+    score = np.abs(med - y).dot(w)
+    return med, np.array([score]), np.empty(0, dtype=np.float64)
 
 
-def mse(X, y, sample_weight = None):
-    return _basic_data(X, y, sample_weight), _mse
+def mse(X, y, sample_weight=None):
+    return _basic_data(X, y, sample_weight), _basic_data(X, y, sample_weight), _mse
 
-def mae(X, y, sample_weight = None):
-    return _basic_data(X, y, sample_weight), _mae
+def mae(X, y, sample_weight=None):
+    return _basic_data(X, y, sample_weight), _basic_data(X, y, sample_weight), _mae
 
 
 def kde_score(X):
@@ -53,11 +53,11 @@ def kde_score(X):
         return scorer(x.T)
     return kde
 
-@njit
+@njit(cache=True)
 def _normalize(a):
     return a / a.sum()
 
-@njit
+@njit(cache=True)
 def weighted_mean_variance(vals, w):
     nw = _normalize(w)
     mean = vals.dot(nw)
@@ -65,7 +65,7 @@ def weighted_mean_variance(vals, w):
     return mean, var
 
 
-@njit
+@njit(cache=True)
 def _calc_treatment_stats(w, treatment, y):
     t_vals, c_vals = y[treatment == 1], y[treatment == 0]
 
@@ -78,9 +78,11 @@ def _calc_treatment_stats(w, treatment, y):
     # treatment effect weighted by weight of leaf
     est_treatment_effect = t_mean - c_mean
 
-    return est_treatment_effect, t_var, c_var
+    t_samples, c_samples = t_vals.shape[0], c_vals.shape[0]
 
-@njit
+    return est_treatment_effect, t_var, c_var, t_samples, c_samples
+
+@njit(cache=True)
 def fill_zip(a, b):
     dif = len(a) - len(b)
     if dif > 0:
@@ -90,17 +92,17 @@ def fill_zip(a, b):
         add = np.repeat(a[-1], abs(dif))
         a = np.concatenate((a, add))
 
-    return list(zip(a,b))
+    return list(zip(a, b))
 
-@njit
+@njit(cache=True)
 def pairs_(a):
     b = []
-    for i,el in enumerate(a):
+    for i, el in enumerate(a):
         for ell in a[i+1:]:
-            b.append((el,ell))
+            b.append((el, ell))
     return b
 
-@njit
+@njit(cache=True)
 def get_ordered_tau(treatment, y):
     t_vals, c_vals = y[treatment == 1], y[treatment == 0]
     t_vals.sort()
@@ -108,24 +110,24 @@ def get_ordered_tau(treatment, y):
     z = np.array(fill_zip(t_vals, c_vals))
     return z[:, 0] - z[:, 1]
 
-@njit
+@njit(cache=True)
 def _wasserstein_differences(dats):
     taus = [get_ordered_tau(d.W[:, 1], d.y) for d in dats]
     combos = pairs_(np.arange(len(dats)))
-    dists = np.array([wasserstein_distance(taus[i], taus[j]) for i,j in combos], dtype=np.float64)
+    dists = np.array([wasserstein_distance(taus[i], taus[j]) for i, j in combos], dtype=np.float64)
 
     # TODO: numeric stability? nan out of wassterstein distance?
     dists = np.array([min(1.e5, d) for d in dists], dtype=np.float64)
 
     # weight based on the minimum of the pair
     weights = np.array([d.W[:, 0].sum() for d in dats])
-    weights = np.array([min(weights[i], weights[j]) for i,j in combos])
+    weights = np.array([min(weights[i], weights[j]) for i, j in combos])
     weights /= weights.sum()
 
     # sum based on weights!
     return np.dot(dists, weights)
 
-# @njit
+# @njit(cache=True)
 # def _get_vals_weights(dat):
 #     y, W = dat.y, dat.W
 #     w, treatment, context_idxs = W[:, 0], W[:, 1], W[:, 2]
@@ -136,13 +138,13 @@ def _wasserstein_differences(dats):
 
 #     return (t_vals, t_weight), (c_vals, c_weight)
 
-# @njit
+# @njit(cache=True)
 # def _xe(a, b, aw, bw):
 #     # TODO: weighted covariance!
 #     cov = np.cov(a,b)[1][1]
 #     return np.mean(a)*np.mean(b) + cov
 
-# @njit
+# @njit(cache=True)
 # def _crosser(da, db):
 #     (ta, taw), (ca, caw) = _get_vals_weights(da)
 #     (tb, tbw), (cb, cbw) = _get_vals_weights(db)
@@ -153,39 +155,139 @@ def _wasserstein_differences(dats):
 #         - _xe(tb, ca, tbw, caw)
 
 
-@njit
-def _cross_expectations(tau, dats):
+
+# build test data and walk through
+# this understanding where it goes wrong...
+@njit(cache=True)
+def _cross_expectations(tau, est_var, dats, ver):
     stats = [_calc_treatment_stats(d.W[:, 0], d.W[:, 1], d.y) for d in dats]
-    taus = np.array([t for t, _, _ in stats])
-    xp = np.mean(taus)
-    return 2*xp*tau - np.mean(taus**2)
+    # threshold???
+    stats = [s for s in stats if s[-2] > 1 and s[-1] > 1]
 
-    # this is nice because it more explicitly shows the dependence
-    # xp = np.mean(np.array([tau*t for t in taus]))
-    # return 2*xp - np.mean(taus**2)
+    taus = np.array([t for t, _, _, tn, cn in stats])
 
-    # xp = np.mean(np.array([a*b for a,b in pairs_(taus)]))
-    # return 2*xp - np.mean(taus**2)
+    # Sum of variances of individual treatment effects
+    # times the 1/K**2 where K is the number of contexts
+    tau_vars = np.array([tv/tn + cv/cn for _, tv, cv, tn, cn in stats])
+    tau_var = tau_vars.sum() / len(tau_vars)**2
 
-@njit
+    tau_mean = np.mean(taus)
+
+    # collapses to tau**2 when only one context
+    # WHY IS THE FIRST ONE BETTER????????????
+    if ver == 0:
+        min_tau = np.min(taus)
+        xp = 2 * tau_mean * min_tau - tau_mean**2
+
+    elif ver == 1:
+        min_tau = np.min(taus)
+        xp = 2 * tau_mean * min_tau - (tau_mean**2 + tau_var)
+
+    # elif ver == 1:
+    #     min_tau = np.min(taus)
+    #     xp = 2 * tau * min_tau - (est_var + tau**2)
+
+    # elif ver == 1:
+        # min_tau = np.min(taus)
+        # xp = 2 * tau * min_tau - np.mean(taus**2)
+
+    elif ver == 2:
+        min_tau = np.min(taus)
+        xp = 2 * tau_mean * min_tau - np.mean(taus**2)
+
+
+    elif ver == 3:
+        bounds = np.array([t - np.sqrt(tv/tn + cv/cn) for t, tv, cv, tn, cn in stats])
+        min_bound = np.min(bounds)
+        xp = 2 * (tau_mean - np.sqrt(tau_var)) * min_bound - np.mean(taus**2)
+
+    elif ver == 4:
+        xp = _cross_expectations_loo(dats)
+
+    # ver == 5
+    else:
+        # xx = np.array([(t, tv/tn + cv/cn) for
+        #                t, tv, cv, tn, cn in stats])
+        inv_vars = 1 / tau_vars
+        inv_vars /= inv_vars.sum()
+        weighted_tau = np.dot(taus, inv_vars)
+        weighted_tau_var = np.dot(tau_vars, inv_vars**2)
+        min_tau = np.min(taus)
+
+        xp = 2 * weighted_tau * min_tau - (weighted_tau_var + weighted_tau**2)
+        tau_mean = weighted_tau
+
+
+    return xp, tau_mean, tau_var # 8.2
+
+
+@njit(cache=True)
+def _filter(dats, idx):
+    return [d for i, d in enumerate(dats) if i != idx]
+
+@njit(cache=True)
+def _pair_loss(dt, ds):
+    stats = [_calc_treatment_stats(d.W[:, 0], d.W[:, 1], d.y)
+             for d in [dt, ds]]
+
+    means_vars = [(tau, tv/tn + cv/cn)
+                  for tau, tv, cv, tn, cn in stats
+                  if tn > 2 and cn > 2]
+
+    if len(means_vars) < 2:
+        # avoid optional issues
+        # just pass nan as none value
+        return np.nan
+
+    st, ss = means_vars
+    return 2 * (st[0] * ss[0]) - (ss[1] + ss[0]**2)
+
+
+@njit(cache=True)
+def _cross_expectations_loo(dats):
+    # all dats have the same z
+    z = dats[0].z
+
+    if len(dats) == 1:
+        # reduces to causal tree loss
+        return _pair_loss(dats[0], dats[0])
+
+    splits = [(dats[i], stack_data(_filter(dats, i), z))
+              for i in range(len(dats))]
+
+    # for each pair, calc pair loss
+    losses = [_pair_loss(t, s) for t, s in splits]
+    losses = [l for l in losses if not np.isnan(l)]
+
+    if len(losses) == 0:
+        return -np.inf
+
+    return np.min(np.array(losses))
+
+
+@njit(cache=True)
 def _tau_variances(dats):
     treatments = [_calc_treatment_stats(d.W[:, 0], d.W[:, 1], d.y) for d in dats]
-    vals = np.array([tau for tau,_,_ in treatments])
+    vals = np.array([t[0] for t in treatments])
     weights = np.array([d.W[:, 0].sum() for d in dats])
     _, var = weighted_mean_variance(vals, weights)
     return var
 
 
-@njit
+@njit(cache=True)
 def _transfer(dat):
+    min_samples, var_weight, importance, target_ctx_idx, xp_version, prediction_mode =\
+        dat.z[0], dat.z[1], dat.z[2], dat.z[3], dat.z[4], dat.z[5]
+    target_dat = reindex_data(dat, dat.W[:, 2] == target_ctx_idx)
+    dat = reindex_data(dat, dat.W[:, 2] != target_ctx_idx)
+
     W = dat.W
     w, treatment, context_idxs = W[:, 0], W[:, 1], W[:, 2]
-    min_samples = dat.z[0]
-    mean_weight, var_weight = dat.z[1], dat.z[2]
-    tau_var_weight, cross_exp_weight = dat.z[3], dat.z[4]
 
     samples_t = treatment.sum()
     samples_c = treatment.shape[0] - samples_t
+    # samples_target = target_dat.X.shape[0]
+    # or samples_target < min_samples
 
     if samples_c < min_samples or samples_t < min_samples:
         return np.inf, np.array([np.inf]), np.array([np.inf, np.inf], dtype=np.float64)
@@ -196,39 +298,58 @@ def _transfer(dat):
 
     # get treatment effect per context
     # TODO: avoid doing this every time (optimize)
-    # Just use a 3-d array for your data!?!? (dat handling would need to support that)
     dats = [reindex_data(dat, context_idxs == i) for i in contexts]
 
-    # penalize treatment effect difference (and variance?) between contexts...
-    # make this weighted variance! Put less weight on contexts with few observations.
-    tau_var = _tau_variances(dats)
-
-    # this variance should be compared to the expected variance, if
-    # given the number of observations...
-    # tau_var_var = np.var(np.array([vt+vc for _,vt,vc in treatments]))
-    # then penalize with another weight!
-
-    tau, t_var, c_var  = _calc_treatment_stats(w, treatment, dat.y)
-
+    tau, t_var, c_var, _, _ = _calc_treatment_stats(w, treatment, dat.y)
     est_var = c_var/samples_c + t_var/samples_t
-    score = var_weight * 2 * est_var  # penalize 2* estimator variance
 
-    score += tau_var_weight*tau_var # penalize tau_var...
+    cross_exp, tau_mean, tau_var = _cross_expectations(tau, est_var, dats, xp_version)
 
-    cross_exp = _cross_expectations(tau, dats)
+    score = -cross_exp
 
-    score -= cross_exp_weight*cross_exp
-    score -= mean_weight * tau**2 # reward squared treatment effect
-    score *= w.sum() # weight by weights of leaf
+    # cross_exp = _cross_expectations_loo(dats)
+    # score = -cross_exp
+    # weight...???
+    # score = (1 - var_weight) * -cross_exp + (var_weight)*var_pen
+    # score *= 2
+
+    if importance:
+        target_w = target_dat.W[:, 0]
+        score *= target_w.sum() # weight by weights of leaf
+    else:
+        score *= w.sum()
 
     # confidence interval
     eps = 1e-8
     c_var, t_var = c_var + eps, t_var + eps
     df = est_var**2
-    df /= ((c_var**2 / (samples_c**3)) + (t_var**2 / samples_t**3 ))
+    df /= ((c_var**2 / (samples_c**3)) + (t_var**2 / samples_t**3))
     sd = np.sqrt(est_var)
 
-    return tau, np.array([score, tau**2, 2*est_var, tau_var, cross_exp]), np.array([df, sd], dtype=np.float64)
+    if prediction_mode == 0:
+
+        # create df from tau_var...
+        # need to figure out how to est degrees
+        # of freedom of pooled estimates!!
+        pred = tau
+    else:
+
+        pred = tau_mean
+
+    return pred, \
+        np.array([score, tau**2, 2*est_var, -cross_exp]), \
+        np.array([df, sd], dtype=np.float64)
+
+
+def stack_W(arrays):
+    return np.hstack([a.reshape(-1, 1) for a in arrays])
+
+def make_target_data(X, idx):
+    N = X.shape[0]
+    w = np.ones(N) / N
+    W = stack_W([w, np.empty(N), np.repeat(idx, N)])
+    return Data(np.array([]), W, X, np.empty(N))
+
 
 
 def transfer(X,
@@ -236,46 +357,42 @@ def transfer(X,
              treatment,
              context_idxs,
              target_X,
-             min_samples = 1,
-             var_weight = 0.25,
-             tau_var_weight = 0.25,
-             cross_exp_weight = 0.25,
-             mean_weight = 0.25,
-             importance = True):
-
-    if not np.isclose(var_weight + tau_var_weight + cross_exp_weight + mean_weight, 1.0, 1e-5):
-        raise Exception('Transfer criteria needs weights to add to 1')
-
-    ps, pt = kde_score(X), kde_score(target_X)
+             min_samples=1,
+             var_weight=0.5,
+             target_ctx_idx=-1,
+             xp_version=0,
+             prediction_mode=0,
+             honest=True,
+             importance=True):
 
     sample_weight = np.ones(y.shape[0])
-    if importance:
-        # TODO: This should not take into account all features, only those
-        # we want to consider!!!!!!!!!!!
-        # create the weights at split time. This will get expensive,
-        # but for now it will have to do...
-        # You could do for dimension before splits, then use same weights for
-        # each split... renormalized, that's the same actually,
-        # "local" weighting is nothing more than renormalization
-
-        # In that case, you need a weight per dimension.
-        # created at the beginning
-        # W then becomes a... 3D array
-        # this doesn't work
-        # will need a separate Weight matrix
-        # and the whole trees framework needs to take that into account...
-        sample_weight = pt(X) / ps(X)
-
     sample_weight /= sample_weight.sum()
 
-    W = np.hstack([a.reshape(-1, 1) for a in
-                   [sample_weight, treatment, context_idxs]])
+    W = stack_W([sample_weight, treatment, context_idxs])
 
-    z = np.array([min_samples, mean_weight, var_weight, tau_var_weight, cross_exp_weight], dtype=np.float64)
+    z = np.array([min_samples,
+                  var_weight,
+                  int(importance),
+                  target_ctx_idx,
+                  xp_version,
+                  prediction_mode], dtype=np.float64)
 
-    return Data(z, W, X, y), _transfer
+    # make combined data
+    source_data = Data(z, W, X, y)
+    target_data = make_target_data(target_X, target_ctx_idx)
+    data = stack_data([source_data, target_data], source_data.z)
 
-@njit
+    if honest:
+        data, data_est = sample_split_data(data, 0.5, data.W[:, 2], None)
+    else:
+        data_est = data
+
+    # set min_samples to 1 for estimation est
+    data_est = modify_z(data_est, 0, 1)
+    return data, data_est, _transfer
+
+
+@njit(cache=True)
 def _causal(dat):
     w, treatment = dat.W[:, 0].copy(), dat.W[:, 1]
     min_samples = dat.z[0]
@@ -290,7 +407,7 @@ def _causal(dat):
     if samples_c < min_samples or samples_t < min_samples:
         return np.inf, np.array([np.inf]), np.array([np.inf, np.inf], dtype=np.float64)
 
-    tau, t_var, c_var = _calc_treatment_stats(w, treatment, dat.y)
+    tau, t_var, c_var, _, _ = _calc_treatment_stats(w, treatment, dat.y)
 
     # score
     est_var = c_var/samples_c + t_var/samples_t
@@ -303,17 +420,18 @@ def _causal(dat):
     eps = 1e-8
     c_var, t_var = c_var + eps, t_var + eps
     df = est_var**2
-    df /= ((c_var**2 / (samples_c**3)) + (t_var**2 / samples_t**3 ))
+    df /= ((c_var**2 / (samples_c**3)) + (t_var**2 / samples_t**3))
     sd = np.sqrt(est_var)
 
     return tau, np.array([score, tau**2, 2*est_var]), np.array([df, sd], dtype=np.float64)
 
 
 def causal_tree_criterion(X, y, treatment,
-                          sample_weight = None,
-                          min_samples = 0,
-                          var_weight = 0.5):
-    N, P = X.shape
+                          sample_weight=None,
+                          min_samples=0,
+                          honest=True,
+                          var_weight=0.5):
+    N, _ = X.shape
 
     if var_weight < 0.0 or var_weight > 1.0:
         raise Exception('var_weight must be between 0.0 and 1.0')
@@ -327,5 +445,13 @@ def causal_tree_criterion(X, y, treatment,
                    treatment.reshape(-1, 1)])
 
     z = np.array([min_samples, var_weight], dtype=np.float64)
+    data = Data(z, W, X, y)
 
-    return Data(z, W, X, y), _causal
+    if honest:
+        data, data_est = sample_split_data(data, 0.5, None, None)
+    else:
+        data_est = data
+
+    # set min_samples to 1 for estimation est
+    data_est = modify_z(data_est, 0, 1)
+    return data, data_est, _causal

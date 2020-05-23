@@ -1,7 +1,7 @@
 import numpy as np
 from numba import njit
 from collections import namedtuple
-from data import subset_data, reindex_data
+from data import subset_data, reindex_data, sort_for_dim, split_data_by_idx
 from dataclasses import dataclass
 from typing import Union
 import scipy.special as sc
@@ -77,25 +77,25 @@ class Node():
         return leaves
 
 
-@njit
+@njit(cache=True)
 def np_unique(a):
     prev = a[0]
     unique = [a[0]]
     idxs = [0]
-    for i,x in enumerate(a):
+    for i, x in enumerate(a):
         if x != prev:
             unique.append(x)
             idxs.append(i)
         prev = x
     return np.array(unique), np.array(idxs)
 
-@njit
+@njit(cache=True)
 def get_indices(X, p, mn, mx):
-    vals, idxs = np_unique(X[:, p])
+    _, idxs = np_unique(X[:, p])
     return idxs[(idxs >= mn) & (idxs <= mx)]
 
 
-@njit
+@njit()
 def find_threshold(crit, dat, p, mn, mx):
     X = dat.X
     N, _ = X.shape
@@ -119,17 +119,14 @@ def find_threshold(crit, dat, p, mn, mx):
 
     return idx, base - loss, thresh
 
-@njit
-def sort_for_dim(dat, p):
-    idx = np.argsort(dat.X[:,p])
-    return reindex_data(dat, idx)
 
-@njit
+
+@njit()
 def find_next_split(crit, dat, min_samples):
     # pick dim with greatest gain (from dims)
     # return dim/threshold/gain
 
-    N,P = dat.X.shape
+    N, P = dat.X.shape
     indices = np.zeros(P, dtype=np.int64)
     gains, thresholds = np.zeros(P), np.zeros(P)
 
@@ -144,25 +141,18 @@ def find_next_split(crit, dat, min_samples):
             find_threshold(crit, di, p, mn, mx)
 
     dim = np.argmax(gains)
-    gain = gains[dim]
 
     return Split(dim, indices[dim], thresholds[dim], gains[dim])
 
 
-@njit
-def split_data_by_idx(dat, idx):
-    left = subset_data(dat, None, idx)
-    right = subset_data(dat, idx, None)
-    return left, right
-
-@njit
+@njit(cache=True)
 def first_greater(a, thresh):
-    for i,x in enumerate(a):
+    for i, x in enumerate(a):
         if x > thresh:
             return a[i], i
     return None
 
-@njit
+@njit(cache=True)
 def split_data_by_thresh(dat, dim, thresh):
     do = sort_for_dim(dat, dim)
     _, idx = first_greater(do.X[:, dim], thresh)
@@ -185,7 +175,7 @@ def build_tree(crit, dat, k, min_samples):
         return leaf
 
     dat_l, dat_r = split_data_by_thresh(dat, split.dim, split.thresh)
-    dim, thresh, gain = split.dim, split.thresh, split.gain
+    dim, thresh, _ = split.dim, split.thresh, split.gain
 
     # stop if one side is empty
     if dat_l.y.shape[0] == 0 or dat_r.y.shape[0] == 0:
@@ -227,14 +217,12 @@ def score_tree(node, dat, crit):
         return scores[0]
 
 
-
-
-
 def estimate_tree(node, dat, crit):
     pred, scores, interval = crit(dat)
 
     if np.isinf(pred):
-        raise Exception(f'Estimation of tree failed with infinity value! dat: {dat.X.shape[0]}')
+        raise Exception(f'Estimation of tree failed with infinity value! dat: {dat.X.shape[0]}. scores: {scores}. node: {node}')
+
 
     leaf = Leaf(pred, scores, interval, dat.y.shape[0])
 
@@ -342,69 +330,66 @@ def collect_score(node):
 class TransferTreeRegressor(RegressorMixin, BaseEstimator):
     def __init__(self,
                  criterion,
-                 max_depth = 10,
-                 min_samples_leaf = 2,
-                 alpha = None,
-                 honest = False):
+                 max_depth=10,
+                 min_samples_leaf=2,
+                 alpha=None):
 
         self.criterion = criterion
         self.max_depth = max_depth
         self.min_samples_leaf = min_samples_leaf
         self.alpha = alpha
-        self.honest = honest
+        self.tree = None
+        self.tree_path = None
+        self.og_tree = None
+        self.data_train = None
+        self.data_est = None
+        self.fit_params = None
+
 
     def fit(self, X, y, **fit_params):
-        data_, crit = self.criterion(X, y, **fit_params)
-
-        if self.honest:
-            N = y.shape[0]
-            S = round(N/2)
-            data_, _ = split_data_by_idx(data_, S)
-
-        self.train_data = data_
+        data_train, data_est, crit = self.criterion(X, y, **fit_params)
+        self.data_train, self.data_est = data_train, data_est
+        self.fit_params = fit_params
 
         tree = build_tree(crit,
-                          data_,
+                          data_train,
                           self.max_depth,
                           self.min_samples_leaf)
 
-        # estimation
-        data_est, crit = self.criterion(X, y, **{**fit_params, 'min_samples': 1 })
-        self.est_data = data_est
+        tree = estimate_tree(tree, data_est, crit)
 
-        if self.honest:
-            _, data_est = split_data_by_idx(data_est, S)
-            tree = estimate_tree(tree, data_est, crit)
-        else:
-            tree = estimate_tree(tree, data_est, crit)
-
-        alpha = self.alpha if self.alpha is not None else 0.
-
-        self.og_tree = tree
         self.tree_path = get_trimmed_trees(tree)
-        try:
-            self.tree = [t for a,t in self.tree_path if a <= alpha][-1]
-        except IndexError:
-            self.tree = self.tree_path[0][1]
+        self.og_tree = tree
+
+        if self.alpha is None:
+            self.set_best_tree()
+        else:
+            self.set_tree_by_alpha(self.alpha)
 
         return self
 
+
     def feature_importance(self, gain=True):
-        return feature_importance(self.tree, self.est_data, gain)
+        return feature_importance(self.tree, self.data_est, gain)
 
     def predict(self, X, interval=None):
         return np.array([predict(x, self.tree, interval) for x in X])
 
+    def set_tree_by_alpha(self, alpha):
+        try:
+            self.tree = [t for a, t in self.tree_path if a <= alpha][-1]
+        except IndexError:
+            self.tree = self.tree_path[0][1]
+
     def set_best_tree(self):
-        if not self.honest:
+        if not self.fit_params.get('honest'):
             raise Exception('best_alpha only works with honest estimation')
 
-        scored = [(tree, alpha, collect_score(tree)) for alpha,tree in self.tree_path]
-        best_tree, best_alpha, best_score = sorted(scored, key=lambda t: t[2])[0]
-        # print(f'best alpha: {best_alpha} and best score: {best_score}')
+        scored = [(tree, alpha, collect_score(tree)) for alpha, tree in self.tree_path]
+        best_tree, _, _ = sorted(scored, key=lambda t: t[2])[0]
         self.tree = best_tree
 
 
     def score(self, X, y, **fit_params):
-        data_, crit = self.criterion(X, y, **{**fit_params, 'min_samples': 1 })
+        data_, crit = self.criterion(X, y, **{**fit_params, 'min_samples': 1})
         return score_tree(self.tree, data_, crit)
