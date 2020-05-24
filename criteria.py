@@ -168,20 +168,20 @@ def _cross_expectations(tau, est_var, dats, ver):
 
     # Sum of variances of individual treatment effects
     # times the 1/K**2 where K is the number of contexts
-    tau_vars = np.array([tv/tn + cv/cn for _, tv, cv, tn, cn in stats])
-    tau_var = tau_vars.sum() / len(tau_vars)**2
+    var = lambda tv, cv, tn, cn: (tv/tn + cv/cn) - ((tv-cv)**2 )/(tn+cn)
+
+    tau_vars = np.array([var(tv, cv, tn, cn) for _, tv, cv, tn, cn in stats])
+    K = len(tau_vars)
+    tau_var = tau_vars.sum() / (K**2)
+
+    df = tau_var**2
+    df /= np.array([ tv**2 / K**3 for tv in tau_vars]).sum()
 
     tau_mean = np.mean(taus)
 
-    # collapses to tau**2 when only one context
-    # WHY IS THE FIRST ONE BETTER????????????
-    if ver == 0:
+    if ver == 1:
         min_tau = np.min(taus)
-        xp = 2 * tau_mean * min_tau - tau_mean**2
-
-    elif ver == 1:
-        min_tau = np.min(taus)
-        xp = 2 * tau_mean * min_tau - (tau_mean**2 + tau_var)
+        xp = 2 * tau_mean * min_tau - np.mean(tau_vars + taus**2)
 
     # elif ver == 1:
     #     min_tau = np.min(taus)
@@ -202,7 +202,10 @@ def _cross_expectations(tau, est_var, dats, ver):
         xp = 2 * (tau_mean - np.sqrt(tau_var)) * min_bound - np.mean(taus**2)
 
     elif ver == 4:
-        xp = _cross_expectations_loo(dats)
+        xp = _cross_expectations_loo(dats, False)
+
+    elif ver == 5:
+        xp = _cross_expectations_loo(dats, True)
 
     # ver == 5
     else:
@@ -218,7 +221,7 @@ def _cross_expectations(tau, est_var, dats, ver):
         tau_mean = weighted_tau
 
 
-    return xp, tau_mean, tau_var # 8.2
+    return xp, tau_mean, tau_var, df # 8.2
 
 
 @njit(cache=True)
@@ -226,39 +229,67 @@ def _filter(dats, idx):
     return [d for i, d in enumerate(dats) if i != idx]
 
 @njit(cache=True)
-def _pair_loss(dt, ds):
-    stats = [_calc_treatment_stats(d.W[:, 0], d.W[:, 1], d.y)
-             for d in [dt, ds]]
+def _var(tv, cv, tn, cn):
+    return (tv/tn + cv/cn) - ((tv-cv)**2 )/(tn+cn)
 
-    means_vars = [(tau, tv/tn + cv/cn)
-                  for tau, tv, cv, tn, cn in stats
-                  if tn > 2 and cn > 2]
+@njit(cache=True)
+def _pair_loss(dt, dss, inc_var):
+    stats_t = _calc_treatment_stats(dt.W[:, 0], dt.W[:, 1], dt.y)
+    stats_s = [_calc_treatment_stats(d.W[:, 0], d.W[:, 1], d.y) for d in dss]
 
-    if len(means_vars) < 2:
-        # avoid optional issues
-        # just pass nan as none value
+    stats_s = [(t, tv, cv, tn, cn)
+               for t, tv, cv, tn, cn in stats_s
+               if tn > 1 and cn > 1]
+
+    if len(stats_s) == 0:
         return np.nan
 
-    st, ss = means_vars
-    return 2 * (st[0] * ss[0]) - (ss[1] + ss[0]**2)
+    taus_s = np.array([s[0] for s in stats_s])
+    vars_s = np.array([_var(tv, cv, tn, cn) for _, tv, cv, tn, cn in stats_s])
+
+    tau_t = stats_t[0]
+
+    score = 2 * (tau_t * np.mean(taus_s)) 
+    if inc_var:
+        score -= np.mean(vars_s + taus_s**2)
+    else:
+        score -= np.mean(taus_s**2)
+    
+    return score
+
+
+# @njit(cache=True)
+# def _pair_loss(dt, ds):
+#     stats = [_calc_treatment_stats(d.W[:, 0], d.W[:, 1], d.y)
+#              for d in [dt, ds]]
+
+#     means_vars = [(tau, tv/tn + cv/cn)
+#                   for tau, tv, cv, tn, cn in stats
+#                   if tn > 2 and cn > 2]
+
+#     if len(means_vars) < 2:
+#         return np.nan
+
+#     st, ss = means_vars
+#     return 2 * (st[0] * ss[0]) - (ss[1] + ss[0]**2)
 
 
 @njit(cache=True)
-def _cross_expectations_loo(dats):
+def _cross_expectations_loo(dats, inc_var):
     # all dats have the same z
     z = dats[0].z
 
     if len(dats) == 1:
         # reduces to causal tree loss
-        return _pair_loss(dats[0], dats[0])
+        return _pair_loss(dats[0], [dats[0]], inc_var)
 
-    splits = [(dats[i], stack_data(_filter(dats, i), z))
+    splits = [(dats[i], _filter(dats, i))
               for i in range(len(dats))]
 
     # for each pair, calc pair loss
-    losses = [_pair_loss(t, s) for t, s in splits]
+    losses = [_pair_loss(t, s, inc_var) for t, s in splits]
     losses = [l for l in losses if not np.isnan(l)]
-
+    
     if len(losses) == 0:
         return -np.inf
 
@@ -303,7 +334,7 @@ def _transfer(dat):
     tau, t_var, c_var, _, _ = _calc_treatment_stats(w, treatment, dat.y)
     est_var = c_var/samples_c + t_var/samples_t
 
-    cross_exp, tau_mean, tau_var = _cross_expectations(tau, est_var, dats, xp_version)
+    cross_exp, tau_mean, tau_var, tau_df = _cross_expectations(tau, est_var, dats, xp_version)
 
     score = -cross_exp
 
@@ -319,22 +350,24 @@ def _transfer(dat):
     else:
         score *= w.sum()
 
-    # confidence interval
-    eps = 1e-8
-    c_var, t_var = c_var + eps, t_var + eps
-    df = est_var**2
-    df /= ((c_var**2 / (samples_c**3)) + (t_var**2 / samples_t**3))
-    sd = np.sqrt(est_var)
-
     if prediction_mode == 0:
 
         # create df from tau_var...
         # need to figure out how to est degrees
         # of freedom of pooled estimates!!
         pred = tau
-    else:
+        eps = 1e-8
+        c_var, t_var = c_var + eps, t_var + eps
+        df = est_var**2
+        df /= ((c_var**2 / (samples_c**3)) + (t_var**2 / samples_t**3))
 
+    else:
         pred = tau_mean
+        est_var = tau_var
+        df = tau_df
+
+    # confidence interval
+    sd = np.sqrt(est_var)
 
     return pred, \
         np.array([score, tau**2, 2*est_var, -cross_exp]), \
