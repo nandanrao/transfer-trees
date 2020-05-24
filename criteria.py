@@ -1,4 +1,4 @@
-from data import Data, reindex_data, stack_data, modify_z, sample_split_data
+from data import Data, reindex_data, stack_data, modify_z, sample_split_data, cv_split_data, recursive_split_data
 from numba import njit
 import numpy as np
 from scipy.stats import gaussian_kde
@@ -41,10 +41,10 @@ def _mae(dat):
 
 
 def mse(X, y, sample_weight=None):
-    return _basic_data(X, y, sample_weight), _basic_data(X, y, sample_weight), _mse
+    return _basic_data(X, y, sample_weight), _basic_data(X, y, sample_weight), _mse, None
 
 def mae(X, y, sample_weight=None):
-    return _basic_data(X, y, sample_weight), _basic_data(X, y, sample_weight), _mae
+    return _basic_data(X, y, sample_weight), _basic_data(X, y, sample_weight), _mae, None
 
 
 def kde_score(X):
@@ -164,6 +164,13 @@ def _cross_expectations(tau, est_var, dats, ver):
     # threshold???
     stats = [s for s in stats if s[-2] > 1 and s[-1] > 1]
 
+    # return np.inf if len(stats) == 0
+
+    # NOTE: implicitly this target encourages leaves from 
+    # only one context.... you shouldn't do that...
+    # But the variance of a missing context is 0, 
+    # You could use tau_var...
+
     taus = np.array([t for t, _, _, tn, cn in stats])
 
     # Sum of variances of individual treatment effects
@@ -202,31 +209,22 @@ def _cross_expectations(tau, est_var, dats, ver):
         xp = 2 * (tau_mean - np.sqrt(tau_var)) * min_bound - np.mean(taus**2)
 
     elif ver == 4:
-        xp = _cross_expectations_loo(dats, False)
+        xp = _cross_expectations_loo(dats, True, False) 
 
     elif ver == 5:
-        xp = _cross_expectations_loo(dats, True)
+        xp = _cross_expectations_loo(dats, False, False) - (np.mean(tau_vars + taus**2))
 
-    # ver == 5
+    elif ver == 6:
+        xp = _cross_expectations_loo(dats, False, False) - np.max(taus**2)
+
+        # 7
     else:
-        # xx = np.array([(t, tv/tn + cv/cn) for
-        #                t, tv, cv, tn, cn in stats])
-        inv_vars = 1 / tau_vars
-        inv_vars /= inv_vars.sum()
-        weighted_tau = np.dot(taus, inv_vars)
-        weighted_tau_var = np.dot(tau_vars, inv_vars**2)
-        min_tau = np.min(taus)
+        xp = _cross_expectations_loo(dats, False, True) - (np.mean(tau_vars + taus**2))
 
-        xp = 2 * weighted_tau * min_tau - (weighted_tau_var + weighted_tau**2)
-        tau_mean = weighted_tau
 
 
     return xp, tau_mean, tau_var, df # 8.2
 
-
-@njit(cache=True)
-def _filter(dats, idx):
-    return [d for i, d in enumerate(dats) if i != idx]
 
 @njit(cache=True)
 def _var(tv, cv, tn, cn):
@@ -235,7 +233,7 @@ def _var(tv, cv, tn, cn):
 @njit(cache=True)
 def _pair_loss(dt, dss, inc_var):
     stats_t = _calc_treatment_stats(dt.W[:, 0], dt.W[:, 1], dt.y)
-    stats_s = [_calc_treatment_stats(d.W[:, 0], d.W[:, 1], d.y) for d in dss]
+    stats_s = [_calc_treatment_stats(d.W[:, 0], d.W[:, 1], d.y) for d in dss]    
 
     stats_s = [(t, tv, cv, tn, cn)
                for t, tv, cv, tn, cn in stats_s
@@ -250,32 +248,16 @@ def _pair_loss(dt, dss, inc_var):
     tau_t = stats_t[0]
 
     score = 2 * (tau_t * np.mean(taus_s)) 
+
     if inc_var:
         score -= np.mean(vars_s + taus_s**2)
-    else:
-        score -= np.mean(taus_s**2)
     
     return score
 
-
-# @njit(cache=True)
-# def _pair_loss(dt, ds):
-#     stats = [_calc_treatment_stats(d.W[:, 0], d.W[:, 1], d.y)
-#              for d in [dt, ds]]
-
-#     means_vars = [(tau, tv/tn + cv/cn)
-#                   for tau, tv, cv, tn, cn in stats
-#                   if tn > 2 and cn > 2]
-
-#     if len(means_vars) < 2:
-#         return np.nan
-
-#     st, ss = means_vars
-#     return 2 * (st[0] * ss[0]) - (ss[1] + ss[0]**2)
-
+    
 
 @njit(cache=True)
-def _cross_expectations_loo(dats, inc_var):
+def _cross_expectations_loo(dats, inc_var, mean=False):
     # all dats have the same z
     z = dats[0].z
 
@@ -283,8 +265,7 @@ def _cross_expectations_loo(dats, inc_var):
         # reduces to causal tree loss
         return _pair_loss(dats[0], [dats[0]], inc_var)
 
-    splits = [(dats[i], _filter(dats, i))
-              for i in range(len(dats))]
+    splits = cv_split_data(dats)
 
     # for each pair, calc pair loss
     losses = [_pair_loss(t, s, inc_var) for t, s in splits]
@@ -293,7 +274,10 @@ def _cross_expectations_loo(dats, inc_var):
     if len(losses) == 0:
         return -np.inf
 
-    return np.min(np.array(losses))
+    if mean:
+        return np.mean(np.array(losses))
+    else:
+        return np.min(np.array(losses))
 
 
 @njit(cache=True)
@@ -309,6 +293,7 @@ def _tau_variances(dats):
 def _transfer(dat):
     min_samples, var_weight, importance, target_ctx_idx, xp_version, prediction_mode =\
         dat.z[0], dat.z[1], dat.z[2], dat.z[3], dat.z[4], dat.z[5]
+
     target_dat = reindex_data(dat, dat.W[:, 2] == target_ctx_idx)
     dat = reindex_data(dat, dat.W[:, 2] != target_ctx_idx)
 
@@ -396,6 +381,7 @@ def transfer(X,
              xp_version=0,
              prediction_mode=0,
              honest=True,
+             cv=None,
              importance=True):
 
     sample_weight = np.ones(y.shape[0])
@@ -420,9 +406,17 @@ def transfer(X,
     else:
         data_est = data
 
+
     # set min_samples to 1 for estimation est
     data_est = modify_z(data_est, 0, 1)
-    return data, data_est, _transfer
+    est_z = data_est.z
+
+    if cv is not None:
+        cv = recursive_split_data(data, cv, 2)
+        cv = [(modify_z(te, 0, 1), stack_data(tr, z))
+              for te, tr in cv_split_data(cv)]
+
+    return data, data_est, _transfer, cv
 
 
 @njit(cache=True)
@@ -463,6 +457,7 @@ def causal_tree_criterion(X, y, treatment,
                           sample_weight=None,
                           min_samples=0,
                           honest=True,
+                          cv=None,
                           var_weight=0.5):
     N, _ = X.shape
 
@@ -487,4 +482,12 @@ def causal_tree_criterion(X, y, treatment,
 
     # set min_samples to 1 for estimation est
     data_est = modify_z(data_est, 0, 1)
-    return data, data_est, _causal
+    est_z = data_est.z
+
+    if cv is not None:
+        cv = recursive_split_data(data, cv)
+        cv = [(modify_z(te, 0, 1), stack_data(tr, z))
+              for te, tr in cv_split_data(cv)]
+
+
+    return data, data_est, _causal, cv

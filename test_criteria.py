@@ -7,22 +7,22 @@ X = lambda N: np.random.normal(size = N).reshape(-1, 1)
 
 def test_mse():
 
-    dat, _, crit = mse(X(8), np.array([10.,10.,10.,10.,30.,30.,30.,30.]))
+    dat, _, crit, _ = mse(X(8), np.array([10.,10.,10.,10.,30.,30.,30.,30.]))
     assert crit(dat)[1] == 100.
-    dat, _, crit = mse(X(4), np.array([10.,10.,10.,10.]))
+    dat, _, crit, _ = mse(X(4), np.array([10.,10.,10.,10.]))
     assert crit(dat)[1] == 0.
-    dat, _, crit = mse(X(8), np.array([5.,5.,5.,5.,10.,10.,10.,10.]))
+    dat, _, crit, _ = mse(X(8), np.array([5.,5.,5.,5.,10.,10.,10.,10.]))
     assert crit(dat)[1] == 6.25
 
 
 def test_mse_with_weights():
     W = lambda N: np.array([0.5, 0.25] * int((N/2)))
 
-    dat, _, crit = mse(X(8), np.array([10.,20.,10.,20.,30.,20.,30.,20.]), W(8))
+    dat, _, crit, _ = mse(X(8), np.array([10.,20.,10.,20.,30.,20.,30.,20.]), W(8))
     assert np.isclose(crit(dat)[1], 66.6666666666)
 
 def test_causal():
-    dat, _, crit = causal_tree_criterion(X(8),
+    dat, _, crit, _ = causal_tree_criterion(X(8),
                                          np.array([10.,10.,10.,10.,30.,30.,30.,30.]),
                                          np.array([0,0,0,0,1,1,1,1]),
                                          honest=False)
@@ -30,7 +30,7 @@ def test_causal():
     assert crit(dat)[1][0] == -400.
 
 # def test_causal_penalizes_double_variance():
-#     dat, _, crit = causal_tree_criterion(X(8),
+#     dat, _, crit, _ = causal_tree_criterion(X(8),
 #                                       np.array([15.,20.,0.,5.,20.,25.,35.,40.]) ,
 #                                       np.array([0,0,0,0,1,1,1,1]))
 
@@ -50,7 +50,7 @@ def test_causal():
 def test_causal_with_weights_trivial():
     W = lambda N: np.array([0.5, 0.25] * int((N/2)))
 
-    dat, _, crit = causal_tree_criterion(X(8),
+    dat, _, crit, _ = causal_tree_criterion(X(8),
                                          np.array([10.,10.,10.,10.,30.,30.,30.,30.]),
                                          np.array([0,0,0,0,1,1,1,1]),
                                          W(8),
@@ -61,7 +61,7 @@ def test_causal_with_weights_trivial():
 def test_causal_with_weights_outlier():
     W = lambda N: np.array([0.5, 0.25] * int((N/2)))
 
-    dat, _, crit = causal_tree_criterion(X(8),
+    dat, _, crit, _ = causal_tree_criterion(X(8),
                                          np.array([10.,10.,10.,10.,30.,30.,30.,300.]),
                                          np.array([0,0,0,0,1,1,1,1]),
                                          np.array([1.,1.,1.,1.,1.,1.,1.,0.1]),
@@ -70,7 +70,7 @@ def test_causal_with_weights_outlier():
     assert np.isclose(crit(dat)[1][0], 1163., 1.0)
 
 
-    dat, _, crit = causal_tree_criterion(X(8),
+    dat, _, crit, _ = causal_tree_criterion(X(8),
                                          np.array([10.,10.,10.,10.,30.,30.,30.,300.]),
                                          np.array([0,0,0,0,1,1,1,1]),
                                          np.array([1.,1.,1.,1.,1.,1.,1.,0.00001]),
@@ -80,7 +80,7 @@ def test_causal_with_weights_outlier():
 
 
 def test_causal_with_min_samples_inf_score():
-    dat, _, crit = causal_tree_criterion(X(8),
+    dat, _, crit, _ = causal_tree_criterion(X(8),
                                          np.array([10.,10.,10.,10.,30.,30.,30.,30.]),
                                          np.array([0,0,0,0,1,1,1,1]),
                                          min_samples = 5,

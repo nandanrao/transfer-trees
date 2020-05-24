@@ -2,6 +2,7 @@ import numpy as np
 from numba import njit
 from collections import namedtuple
 from data import subset_data, reindex_data, sort_for_dim, split_data_by_idx
+from cv import pick_alpha, collect_score
 from dataclasses import dataclass
 from typing import Union
 import scipy.special as sc
@@ -120,7 +121,6 @@ def find_threshold(crit, dat, p, mn, mx):
     return idx, base - loss, thresh
 
 
-
 @njit()
 def find_next_split(crit, dat, min_samples):
     # pick dim with greatest gain (from dims)
@@ -221,7 +221,7 @@ def estimate_tree(node, dat, crit):
     pred, scores, interval = crit(dat)
 
     if np.isinf(pred):
-        raise Exception(f'Estimation of tree failed with infinity value! dat: {dat.X.shape[0]}. scores: {scores}. node: {node}')
+        raise Exception(f'Estimation of tree failed with infinity value! dat min samples: {dat.z[0]}, dat size: {dat.X.shape[0]}. scores: {scores}. interval: {interval}. node: {node}')
 
 
     leaf = Leaf(pred, scores, interval, dat.y.shape[0])
@@ -318,13 +318,14 @@ def _trimmed_trees(node):
 def get_trimmed_trees(node):
     return [(-np.inf, node)] + _trimmed_trees(node)
 
-def collect_score(node):
-    try:
-        left = collect_score(node.left)
-        right = collect_score(node.right)
-        return left + right
-    except AttributeError:
-        return node.scores[0]
+
+
+def build_and_estimate(crit, data_train, data_est, *args):
+    tree = build_tree(crit,
+                      data_train,
+                      *args)
+    tree = estimate_tree(tree, data_est, crit)
+    return tree
 
 
 class TransferTreeRegressor(RegressorMixin, BaseEstimator):
@@ -347,16 +348,23 @@ class TransferTreeRegressor(RegressorMixin, BaseEstimator):
 
 
     def fit(self, X, y, **fit_params):
-        data_train, data_est, crit = self.criterion(X, y, **fit_params)
+        data_train, data_est, crit, cv = self.criterion(X, y, **fit_params)
         self.data_train, self.data_est = data_train, data_est
         self.fit_params = fit_params
 
-        tree = build_tree(crit,
-                          data_train,
-                          self.max_depth,
-                          self.min_samples_leaf)
 
-        tree = estimate_tree(tree, data_est, crit)
+        if cv is not None:
+            # cv is iterator of test, train pairs
+            cv_trees = [build_and_estimate(crit, tr, te, self.max_depth, self.min_samples_leaf)
+                        for te, tr in cv]
+            tree_paths = [get_trimmed_trees(tree) for tree in cv_trees]
+            scored = [[(alpha, collect_score(tree)) for alpha, tree in tree_path]
+                      for tree_path in tree_paths]
+
+            self.alpha, _ = pick_alpha(scored)
+
+
+        tree = build_and_estimate(crit, data_train, data_est, self.max_depth, self.min_samples_leaf)
 
         self.tree_path = get_trimmed_trees(tree)
         self.og_tree = tree
@@ -391,5 +399,5 @@ class TransferTreeRegressor(RegressorMixin, BaseEstimator):
 
 
     def score(self, X, y, **fit_params):
-        data_, crit = self.criterion(X, y, **{**fit_params, 'min_samples': 1})
+        data_, _, crit, _ = self.criterion(X, y, **{**fit_params, 'min_samples': 1})
         return score_tree(self.tree, data_, crit)

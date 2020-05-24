@@ -24,7 +24,8 @@ def generate_one(N, fn, hidden_cause, hidden, v_cond, z_cond):
     H = [np.random.normal(loc=a, scale=b, size=N) for a, b in hiddens]
 
     # V := f(H, N_X)
-    V = [c*h + np.random.normal(loc=a, scale=b, size=N) for h, (c, a, b) in zip(H, v_conds)]
+    # V = [c*h + np.random.normal(loc=a, scale=b, size=N) for h, (c, a, b) in zip(H, v_conds)]
+    V = [c*h + np.random.uniform(low=a, high=a+b, size=N) for h, (c, a, b) in zip(H, v_conds)]
 
     # if hidden_cause:
     # H -> V, H -> Y

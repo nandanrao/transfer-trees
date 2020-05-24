@@ -1,6 +1,7 @@
 from collections import namedtuple
 from numba import njit
 import numpy as np
+import math
 
 Data = namedtuple('Data', ['z', 'W', 'X', 'y'])
 
@@ -59,10 +60,15 @@ def modify_z(dat, idx, val):
 def _sample_split(dat, size, seed):
     if seed is not None:
         np.random.seed(seed)
+
     N = dat.y.shape[0]
-    binoms = np.random.binomial(1, size, size=N)
-    ia = np.argwhere(binoms == 1).flatten()
-    ib = np.argwhere(binoms == 0).flatten()
+    s = math.ceil(size * N)
+    idxs = np.arange(N)
+
+    np.random.shuffle(idxs)    
+
+    ia, ib = idxs[:s], idxs[s:] 
+
     return reindex_data(dat, ia), reindex_data(dat, ib)
 
 
@@ -83,3 +89,33 @@ def sample_split_data(dat, size, context_idxs=None, seed=None):
             da, db = _stack_data(da, a, dat.z), _stack_data(db, b, dat.z)
 
     return da, db
+
+
+
+@njit(cache=True)
+def _filter(dats, idx):
+    return [d for i, d in enumerate(dats) if i != idx]
+
+
+@njit(cache=True)
+def cv_split_data(dats):
+    if len(dats) < 2:
+        raise Exception('Cannot perform CV splitting with length < 2')
+    return [(dats[i], _filter(dats, i))
+            for i in range(len(dats))]
+
+
+
+def recursive_split_data(dat, depth, context_idx_loc=None, seed=None):
+    if depth == 0:
+        return [dat]
+
+    if context_idx_loc:
+        context_idxs = dat.W[:, context_idx_loc]
+    else:
+        context_idxs = None
+
+    a, b = sample_split_data(dat, 0.5, context_idxs, seed)
+ 
+    return recursive_split_data(a, depth - 1, context_idx_loc, seed) + \
+        recursive_split_data(b, depth - 1, context_idx_loc, seed)

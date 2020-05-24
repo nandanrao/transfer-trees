@@ -26,7 +26,7 @@ def test_find_threshold_mse():
 
     X = np.array([1,2,3,4,5,6,7,8]).reshape(-1, 1)
     y = np.array([5,5,5,5,10,10,10,10], dtype=np.float64)
-    dat, _, crit = mse(X, y)
+    dat, _, crit, _ = mse(X, y)
     idx,score,thresh = t.find_threshold(crit, dat, 0, 1, X.shape[0] - 1)
     assert idx == 4
     assert score == 2.5**2
@@ -47,7 +47,7 @@ def test_find_threshold_mae():
 
     X = np.array([1,2,3,4,5,6]).reshape(-1, 1)
     y = np.array([5,10,15,25,30,35], dtype=np.float64)
-    dat, _, crit = mae(X, y)
+    dat, _, crit, _ = mae(X, y)
     idx,score,thresh = t.find_threshold(crit, dat, 0, 1, X.shape[0] - 1)
     assert idx == 3
     assert np.isclose(score, (10 - np.mean([5., 0., 5.])))
@@ -93,7 +93,7 @@ def test_find_next_split_1():
                   [7,4],
                   [8,3]])
     y = np.array([10,20,30,40,50,60,70,80], dtype=np.float64)
-    dat, _, crit = mse(X, y)
+    dat, _, crit, _ = mse(X, y)
     nxt = t.find_next_split(crit, dat, 2)
     assert nxt == t.Split(0, 4, 4.5, 400.)
 
@@ -107,7 +107,7 @@ def test_find_next_split_2():
                   [7,4],
                   [8,3]])
     y = np.array([10,20,30,40,50,60,70,80], dtype=np.float64)
-    dat, _, crit = mse(X, y)
+    dat, _, crit, _ = mse(X, y)
     nxt = t.find_next_split(crit, dat, 2)
     assert nxt == t.Split(1, 4, 6.5, 400.)
 
@@ -169,7 +169,7 @@ def test_build_tree_obeys_min_samples():
                   [7,4],
                   [8,3]])
     y = np.array([10,20,30,40,50,60,70,80], dtype=np.float64)
-    dat, _, crit = mse(X, y)
+    dat, _, crit, _ = mse(X, y)
     tree = t.build_tree(crit,
                         dat,
                         k = 30,
@@ -219,11 +219,11 @@ def test_estimate_trees_replaces_predictions():
                   [8,3]])
     y = np.array([15.,20.,0.,5.,20.,25.,35.,40.])
     treatment = np.array([0,0,0,0,1,1,1,1])
-    dat, _, crit = causal_tree_criterion(X, y, treatment, min_samples=1, honest=False)
+    dat, _, crit, _ = causal_tree_criterion(X, y, treatment, min_samples=1, honest=False)
     tree = t.build_tree(crit, dat, k = 30, min_samples = 1)
 
     y[4:] += 10
-    dat, _, crit = causal_tree_criterion(X, y, treatment, min_samples=1, honest=False)
+    dat, _, crit, _ = causal_tree_criterion(X, y, treatment, min_samples=1, honest=False)
     new_tree = t.estimate_tree(tree, dat, crit)
 
     assert new_tree.right.prediction > tree.right.prediction
@@ -241,7 +241,7 @@ def test_build_tree_works_with_criterion_with_custom_min_samples():
                   [8,3]])
     y = np.array([15.,20.,0.,5.,20.,25.,35.,40.])
     treatment = np.array([0,0,0,0,1,1,1,1])
-    dat, _, crit = causal_tree_criterion(X, y, treatment, min_samples=1, honest=False)
+    dat, _, crit, _ = causal_tree_criterion(X, y, treatment, min_samples=1, honest=False)
     tree = t.build_tree(crit,
                         dat,
                         k = 30,
@@ -249,7 +249,7 @@ def test_build_tree_works_with_criterion_with_custom_min_samples():
 
     assert len(tree) == 3
 
-    dat, _, crit = causal_tree_criterion(X, y, treatment, min_samples=2, honest=False)
+    dat, _, crit, _ = causal_tree_criterion(X, y, treatment, min_samples=2, honest=False)
     tree = t.build_tree(crit,
                         dat,
                         k = 30,
