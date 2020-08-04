@@ -3,7 +3,6 @@ from numba import njit
 import numpy as np
 from scipy.stats import gaussian_kde
 from collections import namedtuple
-from wasserstein import wasserstein_distance
 from itertools import combinations
 
 @njit(cache=True)
@@ -82,77 +81,6 @@ def _calc_treatment_stats(w, treatment, y):
 
     return est_treatment_effect, t_var, c_var, t_samples, c_samples
 
-@njit(cache=True)
-def fill_zip(a, b):
-    dif = len(a) - len(b)
-    if dif > 0:
-        add = np.repeat(b[-1], dif)
-        b = np.concatenate((b, add))
-    elif dif < 0:
-        add = np.repeat(a[-1], abs(dif))
-        a = np.concatenate((a, add))
-
-    return list(zip(a, b))
-
-@njit(cache=True)
-def pairs_(a):
-    b = []
-    for i, el in enumerate(a):
-        for ell in a[i+1:]:
-            b.append((el, ell))
-    return b
-
-@njit(cache=True)
-def get_ordered_tau(treatment, y):
-    t_vals, c_vals = y[treatment == 1], y[treatment == 0]
-    t_vals.sort()
-    c_vals.sort()
-    z = np.array(fill_zip(t_vals, c_vals))
-    return z[:, 0] - z[:, 1]
-
-@njit(cache=True)
-def _wasserstein_differences(dats):
-    taus = [get_ordered_tau(d.W[:, 1], d.y) for d in dats]
-    combos = pairs_(np.arange(len(dats)))
-    dists = np.array([wasserstein_distance(taus[i], taus[j]) for i, j in combos], dtype=np.float64)
-
-    # TODO: numeric stability? nan out of wassterstein distance?
-    dists = np.array([min(1.e5, d) for d in dists], dtype=np.float64)
-
-    # weight based on the minimum of the pair
-    weights = np.array([d.W[:, 0].sum() for d in dats])
-    weights = np.array([min(weights[i], weights[j]) for i, j in combos])
-    weights /= weights.sum()
-
-    # sum based on weights!
-    return np.dot(dists, weights)
-
-# @njit(cache=True)
-# def _get_vals_weights(dat):
-#     y, W = dat.y, dat.W
-#     w, treatment, context_idxs = W[:, 0], W[:, 1], W[:, 2]
-
-#     t_vals, c_vals = y[treatment == 1], y[treatment == 0]
-#     # weighted mean based on weights within leaf
-#     t_weight, c_weight = w[treatment == 1], w[treatment == 0]
-
-#     return (t_vals, t_weight), (c_vals, c_weight)
-
-# @njit(cache=True)
-# def _xe(a, b, aw, bw):
-#     # TODO: weighted covariance!
-#     cov = np.cov(a,b)[1][1]
-#     return np.mean(a)*np.mean(b) + cov
-
-# @njit(cache=True)
-# def _crosser(da, db):
-#     (ta, taw), (ca, caw) = _get_vals_weights(da)
-#     (tb, tbw), (cb, cbw) = _get_vals_weights(db)
-
-#     return _xe(ta, tb, taw, tbw) \
-#         + _xe(ca, cb, caw, cbw) \
-#         - _xe(ta, cb, taw, cbw) \
-#         - _xe(tb, ca, tbw, caw)
 
 
 
@@ -166,9 +94,9 @@ def _cross_expectations(tau, est_var, dats, ver):
 
     # return np.inf if len(stats) == 0
 
-    # NOTE: implicitly this target encourages leaves from 
+    # NOTE: implicitly this target encourages leaves from
     # only one context.... you shouldn't do that...
-    # But the variance of a missing context is 0, 
+    # But the variance of a missing context is 0,
     # You could use tau_var...
 
     taus = np.array([t for t, _, _, tn, cn in stats])
@@ -212,7 +140,7 @@ def _cross_expectations(tau, est_var, dats, ver):
         xp = 2 * (tau_mean - np.sqrt(tau_var)) * min_bound - np.mean(taus**2)
 
     elif ver == 4:
-        xp = _cross_expectations_loo(dats, True, False) 
+        xp = _cross_expectations_loo(dats, True, False)
 
     elif ver == 5:
         xp = _cross_expectations_loo(dats, False, False) - (np.mean(tau_vars + taus**2))
@@ -247,7 +175,7 @@ def _var(tv, cv, tn, cn):
 @njit(cache=True)
 def _pair_loss(dt, dss, inc_var):
     stats_t = _calc_treatment_stats(dt.W[:, 0], dt.W[:, 1], dt.y)
-    stats_s = [_calc_treatment_stats(d.W[:, 0], d.W[:, 1], d.y) for d in dss]    
+    stats_s = [_calc_treatment_stats(d.W[:, 0], d.W[:, 1], d.y) for d in dss]
 
     stats_s = [(t, tv, cv, tn, cn)
                for t, tv, cv, tn, cn in stats_s
@@ -261,14 +189,14 @@ def _pair_loss(dt, dss, inc_var):
 
     tau_t = stats_t[0]
 
-    score = 2 * (tau_t * np.mean(taus_s)) 
+    score = 2 * (tau_t * np.mean(taus_s))
 
     if inc_var:
         score -= np.mean(vars_s + taus_s**2)
-    
+
     return score
 
-    
+
 
 @njit(cache=True)
 def _cross_expectations_loo(dats, inc_var, mean=False):
@@ -284,7 +212,7 @@ def _cross_expectations_loo(dats, inc_var, mean=False):
     # for each pair, calc pair loss
     losses = [_pair_loss(t, s, inc_var) for t, s in splits]
     losses = [l for l in losses if not np.isnan(l)]
-    
+
     if len(losses) == 0:
         return -np.inf
 
@@ -389,8 +317,6 @@ def make_target_data(X, idx):
     w = np.ones(N) / N
     W = stack_W([w, np.empty(N), np.repeat(idx, N)])
     return Data(np.array([]), W, X, np.empty(N))
-
-
 
 def transfer(X,
              y,
