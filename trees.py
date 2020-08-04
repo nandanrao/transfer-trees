@@ -200,9 +200,14 @@ def predict(x, node, interval=None):
             node = pick_split(x, node)
         except AttributeError:
             if interval:
-                df, sd = node.interval
-                z = sc.stdtrit(df, interval)
-                return (node.prediction, node.prediction - z*sd, node.prediction + z*sd)
+                a, b, mode = node.interval
+                if mode == 0:
+                    df, sd = a, b
+                    z = sc.stdtrit(df, interval)
+                    return (node.prediction, node.prediction - z*sd, node.prediction + z*sd)
+                if mode == 1:
+                    lower, upper = a, b
+                    return (node.prediction, lower, upper)
             return node.prediction
 
 

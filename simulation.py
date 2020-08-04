@@ -74,10 +74,12 @@ def generate_data(N, fn, hidden_cause, plot, hiddens, v_conds, z_conds):
     # W := f(N_W) -- TREATMENT
     W = [np.random.binomial(1, 0.5, size=N) for h in H]
 
-    # Y:= fn(H, V, Z, W, N_Y)
-    Y = [fn(h,v,z,w) for h,v,z,w in zip(H, V, Z, W)]
+    fn_res = [fn(h, v, z, 1) for h, v, z in zip(H, V, Z)]
+    taus = [t for t, _ in fn_res]
 
-    taus = [fn(h, v, z, 1) - fn(h, v, z, 0) for h, v, z in zip(H, V, Z)]
+    # Y:= fn(H, V, Z, W, N_Y)
+    Y = [t*w + noise for (t, noise), w in zip(fn_res, W)]
+
 
     if plot:
         plot_dat([(H, 'H'), (V, 'V'), (Z, 'Z'), (Y, 'Y'), (taus, 'Tau')])

@@ -175,9 +175,12 @@ def _cross_expectations(tau, est_var, dats, ver):
 
     # Sum of variances of individual treatment effects
     # times the 1/K**2 where K is the number of contexts
-    var = lambda tv, cv, tn, cn: (tv/tn + cv/cn) - ((tv-cv)**2 )/(tn+cn)
+    # var = lambda tv, cv, tn, cn: (tv/tn + cv/cn) - ((tv-cv)**2 )/(tn+cn)
+    var = lambda tv, cv, tn, cn: (tv/tn + cv/cn) 
 
-    tau_vars = np.array([var(tv, cv, tn, cn) for _, tv, cv, tn, cn in stats])
+    taus_and_vars = np.array([(tau, var(tv, cv, tn, cn)) for tau, tv, cv, tn, cn in stats])
+
+    tau_vars = np.array([v for _, v in taus_and_vars])
     K = len(tau_vars)
     tau_var = tau_vars.sum() / (K**2)
 
@@ -217,13 +220,24 @@ def _cross_expectations(tau, est_var, dats, ver):
     elif ver == 6:
         xp = _cross_expectations_loo(dats, False, False) - np.max(taus**2)
 
-        # 7
-    else:
+    elif ver == 7:
         xp = _cross_expectations_loo(dats, False, True) - (np.mean(tau_vars + taus**2))
 
+    elif ver == 8:
+        xp = _cross_expectations_loo(dats, False, True) - (tau_var + tau_mean**2)
 
+    elif ver == 9:
+        xp = _cross_expectations_loo(dats, False, False) - (tau_var + tau_mean**2)
 
-    return xp, tau_mean, tau_var, df # 8.2
+        # 10
+    else:
+        xp = _cross_expectations_loo(dats, False, False) 
+
+    
+    uppers = np.array([t + np.sqrt(v) for t, v in taus_and_vars])
+    lowers = np.array([t - np.sqrt(v) for t, v in taus_and_vars])
+
+    return xp, tau_mean, tau_var, df, min(lowers), max(uppers)
 
 
 @njit(cache=True)
@@ -319,7 +333,7 @@ def _transfer(dat):
     tau, t_var, c_var, _, _ = _calc_treatment_stats(w, treatment, dat.y)
     est_var = c_var/samples_c + t_var/samples_t
 
-    cross_exp, tau_mean, tau_var, tau_df = _cross_expectations(tau, est_var, dats, xp_version)
+    cross_exp, tau_mean, tau_var, tau_df, lower, upper = _cross_expectations(tau, est_var, dats, xp_version)
 
     score = -cross_exp
 
@@ -331,7 +345,7 @@ def _transfer(dat):
 
     if importance:
         target_w = target_dat.W[:, 0]
-        score *= target_w.sum() # weight by weights of leaf
+        score *= target_w.sum() / w.sum() # weight by weights of leaf
     else:
         score *= w.sum()
 
@@ -346,17 +360,25 @@ def _transfer(dat):
         df = est_var**2
         df /= ((c_var**2 / (samples_c**3)) + (t_var**2 / samples_t**3))
 
-    else:
+    elif prediction_mode == 1:
         pred = tau_mean
         est_var = tau_var
         df = tau_df
+
+    elif prediction_mode == 2:
+        pred = tau_mean
+        est_var = tau_var
+        return pred, \
+            np.array([score, tau**2, 2*est_var, -cross_exp]), \
+            np.array([lower, upper, 1.], dtype=np.float64)
+
 
     # confidence interval
     sd = np.sqrt(est_var)
 
     return pred, \
         np.array([score, tau**2, 2*est_var, -cross_exp]), \
-        np.array([df, sd], dtype=np.float64)
+        np.array([df, sd, 0.], dtype=np.float64)
 
 
 def stack_W(arrays):
@@ -450,7 +472,7 @@ def _causal(dat):
     df /= ((c_var**2 / (samples_c**3)) + (t_var**2 / samples_t**3))
     sd = np.sqrt(est_var)
 
-    return tau, np.array([score, tau**2, 2*est_var]), np.array([df, sd], dtype=np.float64)
+    return tau, np.array([score, tau**2, 2*est_var]), np.array([df, sd, 0.], dtype=np.float64)
 
 
 def causal_tree_criterion(X, y, treatment,
