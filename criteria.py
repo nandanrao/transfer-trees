@@ -131,34 +131,32 @@ def _cross_expectations(tau, est_var, dats, ver):
         min_tau = np.min(taus)
         xp = 2 * tau_mean * min_tau - np.mean(taus**2)
 
-
     elif ver == 3:
         bounds = np.array([t - np.sqrt(tv/tn + cv/cn) for t, tv, cv, tn, cn in stats])
         min_bound = np.min(bounds)
         xp = 2 * (tau_mean - np.sqrt(tau_var)) * min_bound - np.mean(taus**2)
 
     elif ver == 4:
-        xp = _cross_expectations_loo(dats, True, False, False)
+        xp = _cross_expectations_loo(dats, np.median, np.mean, False) - (tau_var + np.median(taus)**2)
 
     elif ver == 5:
-        xp = _cross_expectations_loo(dats, False, False, False) - (np.mean(tau_vars + taus**2))
+        xp = _cross_expectations_loo(dats, np.mean, np.min, False) - (np.mean(tau_vars + taus**2))
 
     elif ver == 6:
-        xp = _cross_expectations_loo(dats, False, False, False) - np.max(taus**2)
+        xp = _cross_expectations_loo(dats, np.mean, np.min, False) - np.max(taus**2)
 
     elif ver == 7:
-        xp = _cross_expectations_loo(dats, False, True, False) - (np.mean(tau_vars + taus**2))
+        xp = _cross_expectations_loo(dats, np.mean, np.mean, False) - (np.mean(tau_vars + taus**2))
 
     elif ver == 8:
-        xp = _cross_expectations_loo(dats, False, True, False) - (tau_var + tau_mean**2)
+        xp = _cross_expectations_loo(dats, np.mean, np.mean, False) - (tau_var + tau_mean**2)
 
     elif ver == 9:
-        xp = _cross_expectations_loo(dats, False, False, False) - (tau_var + tau_mean**2)
+        xp = _cross_expectations_loo(dats, np.mean, np.min, False) - (tau_var + tau_mean**2)
 
         # 10
     else:
-        xp = _cross_expectations_loo(dats, False, False, True) - (tau_var + tau_mean**2)
-
+        xp = _cross_expectations_loo(dats, np.mean, np.min, True) - (tau_var + tau_mean**2)
 
     uppers = np.array([t + np.sqrt(v) for t, v in taus_and_vars])
     lowers = np.array([t - np.sqrt(v) for t, v in taus_and_vars])
@@ -173,7 +171,7 @@ def _var(tv, cv, tn, cn):
 
 
 @njit(cache=True)
-def _pair_loss(dt, dss, inc_var, loo_square_term):
+def _pair_loss(dt, dss, est_fn, loo_square_term):
     stats_t = _calc_treatment_stats(dt.W[:, 0], dt.W[:, 1], dt.y)
     stats_s = [_calc_treatment_stats(d.W[:, 0], d.W[:, 1], d.y) for d in dss]
 
@@ -188,11 +186,7 @@ def _pair_loss(dt, dss, inc_var, loo_square_term):
     vars_s = np.array([_var(tv, cv, tn, cn) for _, tv, cv, tn, cn in stats_s])
 
     tau_t = stats_t[0]
-    score = 2 * (tau_t * np.mean(taus_s))
-
-    # TODO: fix this var term
-    if inc_var:
-        score -= np.mean(vars_s + taus_s**2)
+    score = 2 * (tau_t * est_fn(taus_s)) 
 
     if loo_square_term:
         _, tv, cv, tn, cn = stats_t
@@ -202,26 +196,25 @@ def _pair_loss(dt, dss, inc_var, loo_square_term):
     return score
 
 
-
 @njit(cache=True)
-def _cross_expectations_loo(dats, inc_var, mean, loo_square_term):
+def _cross_expectations_loo(dats, xp_est_fn=np.mean, agg_fn=np.mean, loo_square_term):
+    # all dats have the same z
+    z = dats[0].z
 
     if len(dats) == 1:
         # reduces to causal tree loss
-        return _pair_loss(dats[0], [dats[0]], inc_var, loo_square_term)
+        return _pair_loss(dats[0], [dats[0]], xp_est_fn, loo_square_term)
 
     splits = cv_split_data(dats)
 
     # for each pair, calc pair loss
-    losses = [_pair_loss(t, s, inc_var, loo_square_term) for t, s in splits]
+    losses = [_pair_loss(t, s, xp_est_fn, loo_square_term) for t, s in splits]
     losses = [l for l in losses if not np.isnan(l)]
 
     if len(losses) == 0:
         return -np.inf
 
-    if mean:
-        return np.mean(np.array(losses))
-    return np.min(np.array(losses))
+    return agg_fn(np.array(losses))
 
 
 @njit(cache=True)
