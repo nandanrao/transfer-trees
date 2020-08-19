@@ -141,8 +141,12 @@ def find_next_split(crit, dat, min_samples):
             find_threshold(crit, di, p, mn, mx)
 
     dim = np.argmax(gains)
+    gain = gains[dim]
 
-    return Split(dim, indices[dim], thresholds[dim], gains[dim])
+    if np.isinf(gain):
+        return None
+
+    return Split(dim, indices[dim], thresholds[dim], gain)
 
 
 @njit(cache=True)
@@ -171,7 +175,7 @@ def build_tree(crit, dat, k, min_samples):
     split = find_next_split(crit, dat, min_samples)
 
     # Stop if find_next_split fails to find a possible split
-    if split is None or split.gain == -np.inf:
+    if split is None:
         return leaf
 
     dat_l, dat_r = split_data_by_thresh(dat, split.dim, split.thresh)
@@ -221,13 +225,14 @@ def score_tree(node, dat, crit):
         _, scores, _ = crit(dat)
         return scores[0]
 
+class EstimationError(BaseException):
+    pass
 
 def estimate_tree(node, dat, crit):
     pred, scores, interval = crit(dat)
 
     if np.isinf(pred):
         raise Exception(f'Estimation of tree failed with infinity value! dat min samples: {dat.z[0]}, dat size: {dat.X.shape[0]}. scores: {scores}. interval: {interval}. node: {node}')
-
 
     leaf = Leaf(pred, scores, interval, dat.y.shape[0])
 
@@ -239,6 +244,9 @@ def estimate_tree(node, dat, crit):
         node = Node(leaf, node.dim, node.thresh, left, right)
 
         gain = scores[0] - (node.left.scores[0] + node.right.scores[0])
+        if np.isinf(gain):
+            raise EstimationError('Cannot estimate node, infinite loss, truncating')
+
         tot_gain = gain
         for child in [left, right]:
             if isinstance(child, Node):
@@ -248,6 +256,8 @@ def estimate_tree(node, dat, crit):
         return node
 
     except AttributeError:
+        return leaf
+    except EstimationError:
         return leaf
 
 
@@ -313,7 +323,7 @@ def get_min_trim(node):
 
 def _trimmed_trees(node):
     alpha = get_min_trim(node)
-    if not alpha:
+    if alpha is None:
         return []
 
     new_tree = prune_tree(node, alpha)
@@ -322,7 +332,6 @@ def _trimmed_trees(node):
 
 def get_trimmed_trees(node):
     return [(-np.inf, node)] + _trimmed_trees(node)
-
 
 
 def build_and_estimate(crit, data_train, data_est, *args):

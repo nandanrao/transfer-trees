@@ -66,6 +66,10 @@ def weighted_mean_variance(vals, w):
 @njit(cache=True)
 def _calc_treatment_stats(w, treatment, y):
     t_vals, c_vals = y[treatment == 1], y[treatment == 0]
+    t_samples, c_samples = t_vals.shape[0], c_vals.shape[0]
+
+    if t_samples < 2 or c_samples < 2:
+        return np.nan, np.nan, np.nan, t_samples, c_samples
 
     # weighted mean based on weights within leaf
     t_weight, c_weight = w[treatment == 1], w[treatment == 0]
@@ -76,8 +80,6 @@ def _calc_treatment_stats(w, treatment, y):
     # treatment effect weighted by weight of leaf
     est_treatment_effect = t_mean - c_mean
 
-    t_samples, c_samples = t_vals.shape[0], c_vals.shape[0]
-
     return est_treatment_effect, t_var, c_var, t_samples, c_samples
 
 
@@ -87,8 +89,7 @@ def _calc_treatment_stats(w, treatment, y):
 @njit(cache=True)
 def _cross_expectations(tau, est_var, dats, ver):
     stats = [_calc_treatment_stats(d.W[:, 0], d.W[:, 1], d.y) for d in dats]
-    # threshold???
-    stats = [s for s in stats if s[-2] > 1 and s[-1] > 1]
+    stats = [s for s in stats if not np.isnan(s[0])]
 
     # return np.inf if len(stats) == 0
 
@@ -156,7 +157,7 @@ def _cross_expectations(tau, est_var, dats, ver):
 
         # 10
     else:
-        xp = _cross_expectations_loo(dats, np.mean, np.min, True) - (tau_var + tau_mean**2)
+        xp = _cross_expectations_loo(dats, np.mean, np.mean, True) - (tau_var + tau_mean**2)
 
     uppers = np.array([t + np.sqrt(v) for t, v in taus_and_vars])
     lowers = np.array([t - np.sqrt(v) for t, v in taus_and_vars])
@@ -169,7 +170,6 @@ def _var(tv, cv, tn, cn):
     return (tv/tn + cv/cn) - ((tv-cv)**2)/(tn+cn)
 
 
-
 @njit(cache=True)
 def _pair_loss(dt, dss, est_fn, loo_square_term):
     stats_t = _calc_treatment_stats(dt.W[:, 0], dt.W[:, 1], dt.y)
@@ -177,38 +177,43 @@ def _pair_loss(dt, dss, est_fn, loo_square_term):
 
     stats_s = [(t, tv, cv, tn, cn)
                for t, tv, cv, tn, cn in stats_s
-               if tn > 1 and cn > 1]
+               if not np.isnan(t)]
 
     if len(stats_s) == 0:
+        return np.nan
+
+    tau_t, tv, cv, tn, cn = stats_t
+    if np.isnan(tau_t):
         return np.nan
 
     taus_s = np.array([s[0] for s in stats_s])
     vars_s = np.array([_var(tv, cv, tn, cn) for _, tv, cv, tn, cn in stats_s])
 
-    tau_t = stats_t[0]
-    score = 2 * (tau_t * est_fn(taus_s)) 
-
+    score = 2 * (tau_t * est_fn(taus_s))
     if loo_square_term:
-        _, tv, cv, tn, cn = stats_t
-        v = (tv/tn + cv/cn)
+        v = _var(tv, cv, tn, cn)
         score -= (v + tau_t**2)
 
     return score
 
 
 @njit(cache=True)
-def _cross_expectations_loo(dats, xp_est_fn=np.mean, agg_fn=np.mean, loo_square_term):
+def _cross_expectations_loo(dats, xp_est_fn, agg_fn, loo_square_term):
     # all dats have the same z
     z = dats[0].z
 
     if len(dats) == 1:
         # reduces to causal tree loss
-        return _pair_loss(dats[0], [dats[0]], xp_est_fn, loo_square_term)
+        loss = _pair_loss(dats[0], [dats[0]], xp_est_fn, loo_square_term)
+        return -np.inf if np.isnan(loss) else loss
 
     splits = cv_split_data(dats)
 
     # for each pair, calc pair loss
     losses = [_pair_loss(t, s, xp_est_fn, loo_square_term) for t, s in splits]
+
+    # TODO: add warning for removing losses here -- and add parameter to tune
+    # it -- needs to be considered as it means small data in some domains
     losses = [l for l in losses if not np.isnan(l)]
 
     if len(losses) == 0:
@@ -217,16 +222,16 @@ def _cross_expectations_loo(dats, xp_est_fn=np.mean, agg_fn=np.mean, loo_square_
     return agg_fn(np.array(losses))
 
 
-@njit(cache=True)
-def _tau_variances(dats):
-    treatments = [_calc_treatment_stats(d.W[:, 0], d.W[:, 1], d.y) for d in dats]
-    vals = np.array([t[0] for t in treatments])
-    weights = np.array([d.W[:, 0].sum() for d in dats])
-    _, var = weighted_mean_variance(vals, weights)
-    return var
+# @njit(cache=True)
+# def _tau_variances(dats):
+#     treatments = [_calc_treatment_stats(d.W[:, 0], d.W[:, 1], d.y) for d in dats]
+#     vals = np.array([t[0] for t in treatments])
+#     weights = np.array([d.W[:, 0].sum() for d in dats])
+#     _, var = weighted_mean_variance(vals, weights)
+#     return var
 
 
-def _transfer_plain(dat):
+# def _transfer_plain(dat):
 
 
     # -2 mean of cross expectation
@@ -235,9 +240,7 @@ def _transfer_plain(dat):
     # add the variance of the estimator (variance of the pooled mean of means)
     # add the square of your estimate (mean of means)
 
-
-
-    pass
+    # pass
 
 
 @njit(cache=True)
